@@ -28,7 +28,8 @@ pub const Daemon = struct {
         self.active = profile.dbusForKernel(kernel_profile);
     }
 
-    pub fn activeName(self: *const Daemon) [:0]const u8 {
+    pub fn activeName(self: *Daemon) [:0]const u8 {
+        self.refresh();
         return if (self.active) |active| active.name() else "";
     }
 
