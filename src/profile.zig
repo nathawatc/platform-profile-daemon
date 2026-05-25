@@ -44,14 +44,6 @@ pub const KernelProfile = enum {
         };
     }
 
-    pub fn name(self: KernelProfile) [:0]const u8 {
-        return switch (self) {
-            .low_power => "low-power",
-            .balanced => "balanced",
-            .performance => "performance",
-        };
-    }
-
     pub fn writeBytes(self: KernelProfile) []const u8 {
         return switch (self) {
             .low_power => "low-power\n",

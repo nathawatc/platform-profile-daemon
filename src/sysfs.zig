@@ -6,6 +6,7 @@ pub const Error = error{
     UnknownKernelProfile,
     PermissionDenied,
     WriteFailed,
+    ReadFailed,
 };
 
 pub const Sysfs = struct {
@@ -30,7 +31,7 @@ pub const Sysfs = struct {
         self.fd = fd;
 
         var buf: [64]u8 = undefined;
-        _ = std.c.read(self.fd, &buf, buf.len);
+        _ = readProfileBytes(self.fd, &buf) catch {};
     }
 
     pub fn pollFd(self: Sysfs) std.c.fd_t {
@@ -40,10 +41,8 @@ pub const Sysfs = struct {
     pub fn checkAndRefresh(self: *Sysfs) ?profile.KernelProfile {
         if (self.fd < 0) return null;
         var buf: [64]u8 = undefined;
-        _ = std.c.lseek(self.fd, 0, 0);
-        const rc = std.c.read(self.fd, &buf, buf.len);
-        if (rc <= 0) return null;
-        const n: usize = @intCast(rc);
+        if (std.c.lseek(self.fd, 0, 0) < 0) return null;
+        const n = readProfileBytes(self.fd, &buf) catch return null;
         const text = std.mem.trim(u8, buf[0..n], " \t\r\n");
         if (text.len == 0) return null;
         return profile.KernelProfile.parse(text);
@@ -55,10 +54,7 @@ pub const Sysfs = struct {
         defer _ = std.c.close(fd);
 
         var buf: [64]u8 = undefined;
-        const rc = std.c.read(fd, &buf, buf.len);
-        if (rc < 0) return mapOpenReadError();
-
-        const n: usize = @intCast(rc);
+        const n = try readProfileBytes(fd, &buf);
         const text = std.mem.trim(u8, buf[0..n], " \t\r\n");
         return profile.KernelProfile.parse(text) orelse Error.UnknownKernelProfile;
     }
@@ -74,6 +70,29 @@ pub const Sysfs = struct {
 
 fn writeAll(fd: std.c.fd_t, bytes: []const u8) Error!void {
     try writeAllWith(fd, bytes, cWrite, cErrno);
+}
+
+fn readProfileBytes(fd: std.c.fd_t, buf: []u8) Error!usize {
+    return readProfileBytesWith(fd, buf, cRead, cErrno);
+}
+
+fn readProfileBytesWith(
+    fd: std.c.fd_t,
+    buf: []u8,
+    read_fn: *const fn (std.c.fd_t, [*]u8, usize) isize,
+    errno_fn: *const fn () std.c.E,
+) Error!usize {
+    var total: usize = 0;
+    while (total < buf.len) {
+        const rc = read_fn(fd, buf[total..].ptr, buf.len - total);
+        if (rc < 0) {
+            if (errno_fn() == .INTR) continue;
+            return mapReadError();
+        }
+        if (rc == 0) break;
+        total += @intCast(rc);
+    }
+    return total;
 }
 
 fn writeAllWith(
@@ -96,6 +115,10 @@ fn writeAllWith(
 
 fn cWrite(fd: std.c.fd_t, ptr: [*]const u8, len: usize) isize {
     return std.c.write(fd, ptr, len);
+}
+
+fn cRead(fd: std.c.fd_t, ptr: [*]u8, len: usize) isize {
+    return std.c.read(fd, ptr, len);
 }
 
 fn cErrno() std.c.E {
@@ -122,6 +145,13 @@ fn mapWriteError() Error {
     return switch (std.c.errno(-1)) {
         .ACCES, .PERM => Error.PermissionDenied,
         else => Error.WriteFailed,
+    };
+}
+
+fn mapReadError() Error {
+    return switch (std.c.errno(-1)) {
+        .ACCES, .PERM => Error.PermissionDenied,
+        else => Error.ReadFailed,
     };
 }
 
@@ -218,4 +248,40 @@ test "writeAll retries on EINTR and completes write" {
 
     const sysfs = Sysfs.init(path);
     try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
+}
+
+test "readProfileBytes retries EINTR and handles short reads" {
+    const State = struct {
+        var calls: usize = 0;
+        var last_errno: std.c.E = .SUCCESS;
+        const text = "performance\n";
+
+        fn fakeRead(fd: std.c.fd_t, ptr: [*]u8, len: usize) isize {
+            _ = fd;
+            if (calls == 0) {
+                calls += 1;
+                last_errno = .INTR;
+                return -1;
+            }
+            if (calls > text.len) return 0;
+
+            const remaining = text.len - (calls - 1);
+            const n = @min(@min(len, remaining), 3);
+            @memcpy(ptr[0..n], text[(calls - 1)..][0..n]);
+            calls += n;
+            last_errno = .SUCCESS;
+            return @intCast(n);
+        }
+
+        fn fakeErrno() std.c.E {
+            return last_errno;
+        }
+    };
+
+    var buf: [64]u8 = undefined;
+    State.calls = 0;
+    State.last_errno = .SUCCESS;
+
+    const n = try readProfileBytesWith(-1, &buf, State.fakeRead, State.fakeErrno);
+    try std.testing.expectEqualStrings("performance\n", buf[0..n]);
 }

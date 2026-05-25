@@ -9,6 +9,7 @@ pub const Error = error{
     UnknownKernelProfile,
     PermissionDenied,
     WriteFailed,
+    ReadFailed,
 };
 
 pub const Daemon = struct {
@@ -96,6 +97,7 @@ fn mapSysfsError(err: sysfs_mod.Error) Error {
         error.UnknownKernelProfile => Error.UnknownKernelProfile,
         error.PermissionDenied => Error.PermissionDenied,
         error.WriteFailed => Error.WriteFailed,
+        error.ReadFailed => Error.ReadFailed,
     };
 }
 

@@ -1,7 +1,6 @@
 [Unit]
 Description=Minimal Platform Profile Daemon
 Documentation=https://codeberg.org/nathawat/platform-profile-daemon
-Conflicts=power-profiles-daemon.service
 
 [Service]
 Type=dbus

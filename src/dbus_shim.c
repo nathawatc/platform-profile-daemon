@@ -15,7 +15,7 @@
 #define POLKIT_SERVICE "org.freedesktop.PolicyKit1"
 #define POLKIT_PATH "/org/freedesktop/PolicyKit1/Authority"
 #define POLKIT_INTERFACE "org.freedesktop.PolicyKit1.Authority"
-#define POLKIT_ACTION_SWITCH_PROFILE "org.freedesktop.UPower.PowerProfiles.switch-profile"
+#define POLKIT_ACTION_SWITCH_PROFILE "net.hadess.PowerProfiles.switch-profile"
 #define POLKIT_CHECK_ALLOW_USER_INTERACTION 1U
 
 extern const char *ppd_get_active_profile(void *ctx);
@@ -24,12 +24,6 @@ extern int ppd_poll_fd(void *ctx);
 extern int ppd_check_external_update(void *ctx);
 extern int ppd_profile_id_from_name(const char *name);
 static sd_bus *global_bus = NULL;
-
-enum {
-    PROFILE_POWER_SAVER = 0,
-    PROFILE_BALANCED = 1,
-    PROFILE_PERFORMANCE = 2,
-};
 
 static int append_empty_aa_sv(sd_bus_message *reply) {
     int r = sd_bus_message_open_container(reply, 'a', "a{sv}");
@@ -166,7 +160,6 @@ static int get_active_profile(sd_bus *bus, const char *path, const char *interfa
 static int set_active_profile(sd_bus *bus, const char *path, const char *interface,
                               const char *property, sd_bus_message *value,
                               void *userdata, sd_bus_error *reterr_error) {
-    (void)bus;
     if (strcmp(path, OBJECT_PATH) != 0)
         return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS, "unsupported object path");
     if (strcmp(interface, INTERFACE) != 0)
@@ -176,7 +169,9 @@ static int set_active_profile(sd_bus *bus, const char *path, const char *interfa
 
     const char *profile = NULL;
     int r = sd_bus_message_read(value, "s", &profile);
-    if (r < 0) return r;
+    if (r < 0)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
+                                 "ActiveProfile expects a string value");
 
     int profile_id = ppd_profile_id_from_name(profile);
     if (profile_id < 0)
@@ -203,6 +198,9 @@ static int set_active_profile(sd_bus *bus, const char *path, const char *interfa
     case 3:
         return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
                                  "permission denied writing platform_profile");
+    case 5:
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_FAILED,
+                                 "failed to read platform_profile");
     default:
         return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_FAILED,
                                  "failed to write platform_profile");

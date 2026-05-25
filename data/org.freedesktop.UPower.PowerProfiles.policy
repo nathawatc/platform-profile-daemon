@@ -5,6 +5,16 @@
 <policyconfig>
   <vendor>platform-profile-daemon</vendor>
 
+  <action id="net.hadess.PowerProfiles.switch-profile">
+    <description>Switch power profile</description>
+    <message>Authentication is required to switch the power profile</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
   <action id="org.freedesktop.UPower.PowerProfiles.switch-profile">
     <description>Switch power profile</description>
     <message>Authentication is required to switch the power profile</message>

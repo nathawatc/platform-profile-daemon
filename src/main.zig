@@ -13,6 +13,7 @@ const CallbackStatus = enum(c_int) {
     invalid_profile = 2,
     permission_denied = 3,
     write_failed = 4,
+    read_failed = 5,
 };
 
 export fn ppd_profile_id_from_name(name: [*:0]const u8) c_int {
@@ -78,6 +79,7 @@ export fn ppd_set_active_profile_id(ctx: *anyopaque, profile_id: c_int) c_int {
             error.UnknownProfile => CallbackStatus.invalid_profile,
             error.PermissionDenied => CallbackStatus.permission_denied,
             error.WriteFailed => CallbackStatus.write_failed,
+            error.ReadFailed => CallbackStatus.read_failed,
         });
     };
     if (changed) ppd_emit_active_profile_changed();
