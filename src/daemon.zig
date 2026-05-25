@@ -34,8 +34,9 @@ pub const Daemon = struct {
 
     pub fn setActive(self: *Daemon, requested_name: []const u8) Error!bool {
         const requested = profile.DbusProfile.parse(requested_name) orelse return Error.UnknownProfile;
+        if (self.active == requested) return false;
+
         const kernel_profile = profile.kernelForDbus(requested);
-        const changed = self.active != requested;
 
         self.sysfs.writeProfile(kernel_profile) catch |err| {
             return switch (err) {
@@ -47,11 +48,17 @@ pub const Daemon = struct {
         };
 
         self.active = requested;
-        return changed;
+        return true;
     }
 };
 
 test "unknown dbus profile is rejected" {
     var daemon = Daemon.init("/tmp/does-not-matter");
     try std.testing.expectError(Error.UnknownProfile, daemon.setActive("quiet"));
+}
+
+test "setting cached active profile skips sysfs write" {
+    var daemon = Daemon.init("/tmp/does-not-exist");
+    daemon.active = .balanced;
+    try std.testing.expectEqual(false, try daemon.setActive("balanced"));
 }
