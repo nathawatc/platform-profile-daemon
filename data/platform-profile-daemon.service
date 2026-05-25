@@ -1,6 +1,6 @@
 [Unit]
 Description=Minimal Platform Profile Daemon
-Documentation=https://github.com/nchalapinyo/platform-profile-daemon
+Documentation=https://codeberg.org/nathawat/platform-profile-daemon
 Conflicts=power-profiles-daemon.service
 
 [Service]
