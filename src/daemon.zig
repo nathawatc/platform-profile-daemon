@@ -21,8 +21,8 @@ pub const Daemon = struct {
 
     pub fn refresh(self: *Daemon) void {
         const kernel_profile = self.sysfs.readCurrent() catch |err| {
-            self.supported = false;
             self.active = null;
+            self.supported = err != error.UnsupportedPlatform and err != error.PermissionDenied;
             std.log.warn("platform_profile unavailable: {}", .{err});
             return;
         };
@@ -31,14 +31,14 @@ pub const Daemon = struct {
         self.active = profile.dbusForKernel(kernel_profile);
     }
 
-    pub fn activeName(self: *Daemon) [:0]const u8 {
-        self.refresh();
+    pub fn activeName(self: Daemon) [:0]const u8 {
         return if (self.active) |active| active.name() else "";
     }
 
-    pub fn setActive(self: *Daemon, requested_name: []const u8) Error!void {
+    pub fn setActive(self: *Daemon, requested_name: []const u8) Error!bool {
         const requested = profile.DbusProfile.parse(requested_name) orelse return Error.UnknownProfile;
         const kernel_profile = profile.kernelForDbus(requested);
+        const changed = self.active != requested;
 
         self.sysfs.writeProfile(kernel_profile) catch |err| {
             return switch (err) {
@@ -49,7 +49,9 @@ pub const Daemon = struct {
             };
         };
 
-        self.refresh();
+        self.supported = true;
+        self.active = requested;
+        return changed;
     }
 };
 

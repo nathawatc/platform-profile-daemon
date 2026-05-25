@@ -40,6 +40,14 @@ pub const KernelProfile = enum {
             .performance => "performance",
         };
     }
+
+    pub fn writeBytes(self: KernelProfile) []const u8 {
+        return switch (self) {
+            .low_power => "low-power\n",
+            .balanced => "balanced\n",
+            .performance => "performance\n",
+        };
+    }
 };
 
 pub fn kernelForDbus(value: DbusProfile) KernelProfile {

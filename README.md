@@ -1,6 +1,7 @@
 # Platform Profile Daemon
 
-Minimal Zig daemon that owns `org.freedesktop.UPower.PowerProfiles` and bridges Power Profiles Daemon-compatible D-Bus profile names to one sysfs file only:
+Minimal Zig daemon that owns `org.freedesktop.UPower.PowerProfiles` and bridges
+Power Profiles Daemon-compatible D-Bus profile names to one sysfs file only:
 
 ```text
 /sys/firmware/acpi/platform_profile
@@ -14,12 +15,14 @@ balanced    -> balanced
 performance -> performance
 ```
 
-The daemon intentionally does not read `platform_profile_choices`, does not discover profiles, and does not tune CPU governors, cpufreq, amd_pstate, EPP, or vendor policy.
+The daemon intentionally does not read `platform_profile_choices`, does not
+discover profiles, and does not tune CPU governors, cpufreq, amd_pstate, EPP, or
+vendor policy.
 
 ## Build
 
 ```sh
-zig build
+zig build -Doptimize=ReleaseFast
 ```
 
 ## Test

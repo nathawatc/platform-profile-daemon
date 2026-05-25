@@ -1,10 +1,8 @@
-#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <systemd/sd-bus.h>
-#include <systemd/sd-daemon.h>
 
 #define BUS_NAME "org.freedesktop.UPower.PowerProfiles"
 #define OBJECT_PATH "/org/freedesktop/UPower/PowerProfiles"
@@ -257,8 +255,6 @@ int ppd_bus_run(void *state) {
         fprintf(stderr, "failed to acquire bus name: %s\n", strerror(-r));
         goto finish;
     }
-
-    (void)sd_notify(0, "READY=1");
 
     for (;;) {
         r = sd_bus_process(bus, NULL);

@@ -34,8 +34,7 @@ pub const Sysfs = struct {
         if (fd < 0) return mapOpenWriteError();
         defer _ = std.c.close(fd);
 
-        try writeAll(fd, value.name());
-        try writeAll(fd, "\n");
+        try writeAll(fd, value.writeBytes());
     }
 };
 
