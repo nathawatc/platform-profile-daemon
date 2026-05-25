@@ -67,17 +67,80 @@ busctl --system get-property org.freedesktop.UPower.PowerProfiles \
 
 ## D-Bus smoke test (system bus)
 
-Run this on a machine with systemd and a writable test sysfs file path:
+Run this manually on a machine with systemd and writable
+`/sys/firmware/acpi/platform_profile`:
 
 ```sh
-sudo systemctl start platform-profile-daemon.service
+sudo systemctl restart platform-profile-daemon.service
+sudo ./tools/dbus-smoke.sh
+```
+
+The script is opt-in and checks:
+
+- `ActiveProfile` and `GetAll` queries
+- valid `Set ActiveProfile` values (`power-saver`, `balanced`, `performance`)
+- rejection of invalid profile/type/interface/path/property writes
+- fixed mapping to kernel sysfs values
+- restoring the original profile on exit when possible
+
+## Security model
+
+This daemon is designed as a minimal personal Power Profiles Daemon-compatible
+bridge.
+
+For compatibility with desktop clients and widgets, local clients are currently
+allowed to request `ActiveProfile` changes over D-Bus. The daemon validates
+requested profile names strictly and only accepts `power-saver`, `balanced`,
+and `performance`.
+
+Polkit authorization is not currently implemented. This is intentional for the
+current personal/single-user usage model.
+
+For hardened multi-user deployments, mutating operations such as setting
+`ActiveProfile` should be protected with Polkit authorization. Future support
+should use the Power Profiles Daemon-compatible action name
+`org.freedesktop.UPower.PowerProfiles.switch-profile`.
+
+## Manual validation checklist
+
+```sh
+# Restart service
+sudo systemctl restart platform-profile-daemon.service
+
+# Get ActiveProfile
+busctl --system get-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile
+
+# GetAll properties
+busctl --system call org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.DBus.Properties GetAll s \
+  org.freedesktop.UPower.PowerProfiles
+
+# Set valid profiles
+busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile s power-saver
 busctl --system set-property org.freedesktop.UPower.PowerProfiles \
   /org/freedesktop/UPower/PowerProfiles \
   org.freedesktop.UPower.PowerProfiles ActiveProfile s balanced
+busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile s performance
+
+# Reject invalid profile
 busctl --system set-property org.freedesktop.UPower.PowerProfiles \
   /org/freedesktop/UPower/PowerProfiles \
   org.freedesktop.UPower.PowerProfiles ActiveProfile s invalid-profile
-busctl --system set-property org.freedesktop.UPower.PowerProfiles \
-  /org/freedesktop/UPower/PowerProfiles \
-  org.freedesktop.UPower.PowerProfiles ActiveProfile s balanced
+
+# Inspect kernel platform profile
+cat /sys/firmware/acpi/platform_profile
+
+# Check service logs
+journalctl -u platform-profile-daemon.service --since "10 min ago"
 ```
+
+Then verify desktop widget/client behavior by switching profiles from the UI and
+confirming both D-Bus `ActiveProfile` and
+`/sys/firmware/acpi/platform_profile` stay in sync.

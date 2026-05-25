@@ -159,3 +159,55 @@ test "unknown current kernel profile still allows write" {
     const sysfs = sysfs_mod.Sysfs.init(path);
     try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
 }
+
+test "invalid external refresh keeps cached profile unchanged and reports no change" {
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-refresh-invalid-{d}", .{std.c.getpid()});
+    defer _ = std.c.unlink(path.ptr);
+
+    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(fd >= 0);
+    defer _ = std.c.close(fd);
+    const written = std.c.write(fd, "balanced\n", "balanced\n".len);
+    try std.testing.expectEqual(@as(isize, "balanced\n".len), written);
+
+    var daemon = Daemon.init(path);
+    defer daemon.deinit();
+    try daemon.refresh();
+    try daemon.sysfs.watch();
+    try std.testing.expectEqualStrings("balanced", daemon.activeName());
+
+    const truncate_fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true });
+    try std.testing.expect(truncate_fd >= 0);
+    defer _ = std.c.close(truncate_fd);
+
+    try std.testing.expectEqual(false, daemon.checkExternalUpdate());
+    try std.testing.expectEqualStrings("balanced", daemon.activeName());
+}
+
+test "malformed external refresh keeps cached profile unchanged and reports no change" {
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-refresh-malformed-{d}", .{std.c.getpid()});
+    defer _ = std.c.unlink(path.ptr);
+
+    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(fd >= 0);
+    defer _ = std.c.close(fd);
+    const written = std.c.write(fd, "balanced\n", "balanced\n".len);
+    try std.testing.expectEqual(@as(isize, "balanced\n".len), written);
+
+    var daemon = Daemon.init(path);
+    defer daemon.deinit();
+    try daemon.refresh();
+    try daemon.sysfs.watch();
+    try std.testing.expectEqualStrings("balanced", daemon.activeName());
+
+    const write_fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true });
+    try std.testing.expect(write_fd >= 0);
+    defer _ = std.c.close(write_fd);
+    const malformed_written = std.c.write(write_fd, "quiet\n", "quiet\n".len);
+    try std.testing.expectEqual(@as(isize, "quiet\n".len), malformed_written);
+
+    try std.testing.expectEqual(false, daemon.checkExternalUpdate());
+    try std.testing.expectEqualStrings("balanced", daemon.activeName());
+}
