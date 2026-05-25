@@ -21,7 +21,10 @@ pub fn build(b: *std.Build) void {
     exe.lto = if (optimize == .Debug) .none else .full;
     addSystemdShim(b, exe.root_module);
 
-    b.installArtifact(exe);
+    b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
+        .dest_dir = .{ .override = .lib },
+        .dest_sub_path = "platform-profile-daemon",
+    }).step);
     b.installFile("data/platform-profile-daemon.service", "lib/systemd/system/platform-profile-daemon.service");
     b.installFile("data/org.freedesktop.UPower.PowerProfiles.service", "share/dbus-1/system-services/org.freedesktop.UPower.PowerProfiles.service");
     b.installFile("data/org.freedesktop.UPower.PowerProfiles.conf", "share/dbus-1/system.d/org.freedesktop.UPower.PowerProfiles.conf");

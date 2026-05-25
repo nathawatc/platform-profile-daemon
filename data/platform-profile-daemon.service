@@ -6,7 +6,7 @@ Conflicts=power-profiles-daemon.service
 [Service]
 Type=dbus
 BusName=org.freedesktop.UPower.PowerProfiles
-ExecStart=/usr/bin/platform-profile-daemon
+ExecStart=/usr/lib/platform-profile-daemon
 Restart=on-failure
 RestartSec=1s
 NoNewPrivileges=yes
