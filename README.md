@@ -59,7 +59,24 @@ zig build run -- --platform-profile /tmp/platform_profile
 ## Query
 
 ```sh
-busctl get-property org.freedesktop.UPower.PowerProfiles \
+busctl --system get-property org.freedesktop.UPower.PowerProfiles \
   /org/freedesktop/UPower/PowerProfiles \
   org.freedesktop.UPower.PowerProfiles ActiveProfile
+```
+
+## D-Bus smoke test (system bus)
+
+Run this on a machine with systemd and a writable test sysfs file path:
+
+```sh
+sudo systemctl start platform-profile-daemon.service
+busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile s balanced
+busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile s invalid-profile
+busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile s balanced
 ```

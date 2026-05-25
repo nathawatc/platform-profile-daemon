@@ -21,7 +21,7 @@ Do not add dynamic profile discovery or read `platform_profile_choices`.
 - `zig build test`: run Zig unit tests.
 - `zig build -Doptimize=ReleaseFast`: build the optimized daemon.
 - `zig build run -- --platform-profile /tmp/platform_profile`: run against a fake sysfs file. <!-- rumdl-disable-line MD013 -->
-- `busctl --address="$DBUS_SESSION_BUS_ADDRESS" ...`: test D-Bus behavior inside `dbus-run-session`. <!-- rumdl-disable-line MD013 -->
+- `busctl --system ...`: test D-Bus behavior on the system bus. <!-- rumdl-disable-line MD013 -->
 
 Use fake sysfs files for local tests. Do not write real
 `/sys/firmware/acpi/platform_profile` unless intentionally testing on a target
@@ -49,8 +49,8 @@ zig build test
 zig build -Doptimize=ReleaseFast
 ```
 
-For D-Bus changes, also run a `dbus-run-session` smoke test covering valid
-profiles, invalid profiles, and same-profile no-write behavior.
+For D-Bus changes, run a system-bus smoke test (root/systemd environment)
+covering valid profiles, invalid profiles, and same-profile no-write behavior.
 
 ## Commit & Pull Request Guidelines
 

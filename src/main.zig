@@ -24,7 +24,10 @@ pub fn main(init: std.process.Init) !void {
     };
 
     var daemon = daemon_mod.Daemon.init(platform_profile_path);
-    daemon.refresh();
+    daemon.refresh() catch |err| {
+        std.log.err("platform_profile unavailable: {}", .{err});
+        return err;
+    };
 
     const rc = ppd_bus_run(&daemon);
     if (rc < 0) return error.DBusFailed;
