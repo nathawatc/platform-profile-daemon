@@ -37,15 +37,16 @@ pub const Sysfs = struct {
         return self.fd;
     }
 
-    pub fn checkAndRefresh(self: *Sysfs) profile.KernelProfile {
-        if (self.fd < 0) return .balanced;
+    pub fn checkAndRefresh(self: *Sysfs) ?profile.KernelProfile {
+        if (self.fd < 0) return null;
         var buf: [64]u8 = undefined;
         _ = std.c.lseek(self.fd, 0, 0);
         const rc = std.c.read(self.fd, &buf, buf.len);
-        if (rc <= 0) return .balanced;
+        if (rc <= 0) return null;
         const n: usize = @intCast(rc);
         const text = std.mem.trim(u8, buf[0..n], " \t\r\n");
-        return profile.KernelProfile.parse(text) orelse .balanced;
+        if (text.len == 0) return null;
+        return profile.KernelProfile.parse(text);
     }
 
     pub fn readCurrent(self: Sysfs) Error!profile.KernelProfile {
@@ -75,7 +76,10 @@ fn writeAll(fd: std.c.fd_t, bytes: []const u8) Error!void {
     var written: usize = 0;
     while (written < bytes.len) {
         const rc = std.c.write(fd, bytes[written..].ptr, bytes.len - written);
-        if (rc < 0) return mapWriteError();
+        if (rc < 0) {
+            if (std.c.errno(-1) == .INTR) continue;
+            return mapWriteError();
+        }
         if (rc == 0) return Error.WriteFailed;
         written += @intCast(rc);
     }
@@ -123,8 +127,42 @@ test "read, write, watch and refresh platform profile file" {
 
     try sysfs.watch();
     try std.testing.expect(sysfs.pollFd() >= 0);
-    try std.testing.expectEqual(profile.KernelProfile.performance, sysfs.checkAndRefresh());
+    try std.testing.expectEqual(@as(?profile.KernelProfile, .performance), sysfs.checkAndRefresh());
 
     try sysfs.writeProfile(.low_power);
-    try std.testing.expectEqual(profile.KernelProfile.low_power, sysfs.checkAndRefresh());
+    try std.testing.expectEqual(@as(?profile.KernelProfile, .low_power), sysfs.checkAndRefresh());
+}
+
+test "checkAndRefresh returns null for invalid fd and malformed content" {
+    var sysfs = Sysfs.init("/tmp/does-not-matter");
+    try std.testing.expectEqual(@as(?profile.KernelProfile, null), sysfs.checkAndRefresh());
+
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-invalid-{d}", .{std.c.getpid()});
+    defer _ = std.c.unlink(path.ptr);
+
+    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(fd >= 0);
+    defer _ = std.c.close(fd);
+    try writeAll(fd, "quiet\n");
+
+    var watched = Sysfs.init(path);
+    defer watched.deinit();
+    try watched.watch();
+    try std.testing.expectEqual(@as(?profile.KernelProfile, null), watched.checkAndRefresh());
+}
+
+test "checkAndRefresh returns null for empty content" {
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-empty-{d}", .{std.c.getpid()});
+    defer _ = std.c.unlink(path.ptr);
+
+    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(fd >= 0);
+    defer _ = std.c.close(fd);
+
+    var watched = Sysfs.init(path);
+    defer watched.deinit();
+    try watched.watch();
+    try std.testing.expectEqual(@as(?profile.KernelProfile, null), watched.checkAndRefresh());
 }

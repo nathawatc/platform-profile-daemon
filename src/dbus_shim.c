@@ -17,6 +17,7 @@ extern const char *ppd_get_active_profile(void *ctx);
 extern int ppd_set_active_profile_id(void *ctx, int profile_id);
 extern int ppd_poll_fd(void *ctx);
 extern int ppd_check_external_update(void *ctx);
+extern int ppd_profile_id_from_name(const char *name);
 static sd_bus *global_bus = NULL;
 
 enum {
@@ -24,23 +25,6 @@ enum {
     PROFILE_BALANCED = 1,
     PROFILE_PERFORMANCE = 2,
 };
-
-static int profile_id_from_string(const char *profile) {
-    const size_t len = strlen(profile);
-
-    switch (len) {
-    case sizeof("balanced") - 1:
-        return memcmp(profile, "balanced", sizeof("balanced") - 1) == 0 ? PROFILE_BALANCED : -1;
-    case sizeof("power-saver") - 1:
-        if (profile[1] == 'o')
-            return memcmp(profile, "power-saver", sizeof("power-saver") - 1) == 0 ? PROFILE_POWER_SAVER : -1;
-        if (profile[1] == 'e')
-            return memcmp(profile, "performance", sizeof("performance") - 1) == 0 ? PROFILE_PERFORMANCE : -1;
-        return -1;
-    default:
-        return -1;
-    }
-}
 
 static int append_empty_aa_sv(sd_bus_message *reply) {
     int r = sd_bus_message_open_container(reply, 'a', "a{sv}");
@@ -93,15 +77,18 @@ static int set_active_profile(sd_bus *bus, const char *path, const char *interfa
                               const char *property, sd_bus_message *value,
                               void *userdata, sd_bus_error *reterr_error) {
     (void)bus;
-    (void)path;
-    (void)interface;
-    (void)property;
+    if (strcmp(path, OBJECT_PATH) != 0)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS, "unsupported object path");
+    if (strcmp(interface, INTERFACE) != 0)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS, "unsupported interface");
+    if (strcmp(property, "ActiveProfile") != 0)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_PROPERTY_READ_ONLY, "unsupported property");
 
     const char *profile = NULL;
     int r = sd_bus_message_read(value, "s", &profile);
     if (r < 0) return r;
 
-    int profile_id = profile_id_from_string(profile);
+    int profile_id = ppd_profile_id_from_name(profile);
     if (profile_id < 0)
         return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
                                  "unsupported profile '%s'", profile);
@@ -289,8 +276,6 @@ int ppd_bus_run(void *state) {
         goto finish;
     }
 
-    int sysfs_fd = ppd_poll_fd(state);
-
     for (;;) {
         r = sd_bus_process(bus, NULL);
         if (r < 0) {
@@ -299,6 +284,8 @@ int ppd_bus_run(void *state) {
         }
         if (r > 0)
             continue;
+
+        int sysfs_fd = ppd_poll_fd(state);
 
         struct pollfd fds[2];
         int nfds = 1;

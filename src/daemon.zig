@@ -70,7 +70,10 @@ pub const Daemon = struct {
     }
 
     pub fn checkExternalUpdate(self: *Daemon) bool {
-        const kernel_profile = (&self.sysfs).checkAndRefresh();
+        const kernel_profile = (&self.sysfs).checkAndRefresh() orelse {
+            std.log.warn("ignoring invalid platform_profile refresh event", .{});
+            return false;
+        };
         const new_active = profile.dbusForKernel(kernel_profile);
         if (new_active != self.active) {
             self.active = new_active;

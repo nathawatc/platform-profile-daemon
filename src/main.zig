@@ -1,5 +1,6 @@
 const std = @import("std");
 const daemon_mod = @import("daemon.zig");
+const profile_mod = @import("profile.zig");
 
 const default_platform_profile_path = "/sys/firmware/acpi/platform_profile";
 
@@ -13,6 +14,16 @@ const CallbackStatus = enum(c_int) {
     permission_denied = 3,
     write_failed = 4,
 };
+
+export fn ppd_profile_id_from_name(name: [*:0]const u8) c_int {
+    const text = std.mem.sliceTo(name, 0);
+    const dbus_profile = profile_mod.DbusProfile.parseName(text) orelse return -1;
+    return switch (dbus_profile) {
+        .power_saver => 0,
+        .balanced => 1,
+        .performance => 2,
+    };
+}
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();

@@ -21,6 +21,13 @@ pub const DbusProfile = enum {
             .performance => "performance",
         };
     }
+
+    pub fn parseName(value: []const u8) ?DbusProfile {
+        if (std.mem.eql(u8, value, "power-saver")) return .power_saver;
+        if (std.mem.eql(u8, value, "balanced")) return .balanced;
+        if (std.mem.eql(u8, value, "performance")) return .performance;
+        return null;
+    }
 };
 
 pub const KernelProfile = enum {
@@ -80,4 +87,13 @@ test "reverse mapping rejects non-hardcoded kernel values" {
     try std.testing.expectEqual(DbusProfile.power_saver, dbusForKernel(KernelProfile.low_power));
     try std.testing.expectEqual(@as(?KernelProfile, null), KernelProfile.parse("quiet"));
     try std.testing.expectEqual(@as(?KernelProfile, null), KernelProfile.parse("balanced-performance"));
+}
+
+test "dbus profile name parsing is strict" {
+    try std.testing.expectEqual(@as(?DbusProfile, .power_saver), DbusProfile.parseName("power-saver"));
+    try std.testing.expectEqual(@as(?DbusProfile, .balanced), DbusProfile.parseName("balanced"));
+    try std.testing.expectEqual(@as(?DbusProfile, .performance), DbusProfile.parseName("performance"));
+    try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.parseName(""));
+    try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.parseName("balanced "));
+    try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.parseName("turbo"));
 }
