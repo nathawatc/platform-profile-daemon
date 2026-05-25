@@ -14,18 +14,6 @@ pub const DbusProfile = enum {
         };
     }
 
-    pub fn parse(value: []const u8) ?DbusProfile {
-        return switch (value.len) {
-            "balanced".len => if (std.mem.eql(u8, value, "balanced")) .balanced else null,
-            "power-saver".len => blk: {
-                if (std.mem.eql(u8, value, "power-saver")) break :blk .power_saver;
-                if (std.mem.eql(u8, value, "performance")) break :blk .performance;
-                break :blk null;
-            },
-            else => null,
-        };
-    }
-
     pub fn name(self: DbusProfile) [:0]const u8 {
         return switch (self) {
             .power_saver => "power-saver",

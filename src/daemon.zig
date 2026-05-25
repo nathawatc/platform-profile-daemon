@@ -33,11 +33,6 @@ pub const Daemon = struct {
         return if (self.active) |active| active.name() else "";
     }
 
-    pub fn setActive(self: *Daemon, requested_name: []const u8) Error!bool {
-        const requested = profile.DbusProfile.parse(requested_name) orelse return Error.UnknownProfile;
-        return self.setActiveProfile(requested);
-    }
-
     pub fn setActiveId(self: *Daemon, requested_id: c_int) Error!bool {
         const requested = profile.DbusProfile.fromId(requested_id) orelse return Error.UnknownProfile;
         return self.setActiveProfile(requested);
@@ -64,11 +59,11 @@ pub const Daemon = struct {
 
 test "unknown dbus profile is rejected" {
     var daemon = Daemon.init("/tmp/does-not-matter");
-    try std.testing.expectError(Error.UnknownProfile, daemon.setActive("quiet"));
+    try std.testing.expectError(Error.UnknownProfile, daemon.setActiveId(99));
 }
 
 test "setting cached active profile skips sysfs write" {
     var daemon = Daemon.init("/tmp/does-not-exist");
     daemon.active = .balanced;
-    try std.testing.expectEqual(false, try daemon.setActive("balanced"));
+    try std.testing.expectEqual(false, try daemon.setActiveId(1));
 }
