@@ -18,8 +18,18 @@ pub const Daemon = struct {
         return .{ .sysfs = sysfs_mod.Sysfs.init(platform_profile_path) };
     }
 
+    pub fn deinit(self: *Daemon) void {
+        (&self.sysfs).deinit();
+    }
+
+    pub fn watch(self: *Daemon) void {
+        (&self.sysfs).watch() catch |err| {
+            std.log.warn("failed to watch platform_profile: {}", .{err});
+        };
+    }
+
     pub fn refresh(self: *Daemon) void {
-        const kernel_profile = self.sysfs.readCurrent() catch |err| {
+        const kernel_profile = (&self.sysfs).readCurrent() catch |err| {
             self.active = null;
             std.log.warn("platform_profile unavailable: {}", .{err});
             return;
@@ -43,7 +53,7 @@ pub const Daemon = struct {
 
         const kernel_profile = profile.kernelForDbus(requested);
 
-        self.sysfs.writeProfile(kernel_profile) catch |err| {
+        (&self.sysfs).writeProfile(kernel_profile) catch |err| {
             return switch (err) {
                 error.UnsupportedPlatform => Error.UnsupportedPlatform,
                 error.UnknownKernelProfile => Error.UnknownKernelProfile,
@@ -54,6 +64,20 @@ pub const Daemon = struct {
 
         self.active = requested;
         return true;
+    }
+
+    pub fn checkExternalUpdate(self: *Daemon) bool {
+        const kernel_profile = (&self.sysfs).checkAndRefresh();
+        const new_active = profile.dbusForKernel(kernel_profile);
+        if (new_active != self.active) {
+            self.active = new_active;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn pollFd(self: *Daemon) std.c.fd_t {
+        return (&self.sysfs).pollFd();
     }
 };
 

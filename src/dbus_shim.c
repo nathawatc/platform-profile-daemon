@@ -1,8 +1,12 @@
+#define _GNU_SOURCE
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <systemd/sd-bus.h>
+#include <poll.h>
+#include <time.h>
+#include <errno.h>
 
 #define BUS_NAME "org.freedesktop.UPower.PowerProfiles"
 #define OBJECT_PATH "/org/freedesktop/UPower/PowerProfiles"
@@ -11,6 +15,8 @@
 
 extern const char *ppd_get_active_profile(void *ctx);
 extern int ppd_set_active_profile_id(void *ctx, int profile_id);
+extern int ppd_poll_fd(void *ctx);
+extern int ppd_check_external_update(void *ctx);
 static sd_bus *global_bus = NULL;
 
 enum {
@@ -284,6 +290,8 @@ int ppd_bus_run(void *state) {
         goto finish;
     }
 
+    int sysfs_fd = ppd_poll_fd(state);
+
     for (;;) {
         r = sd_bus_process(bus, NULL);
         if (r < 0) {
@@ -293,10 +301,54 @@ int ppd_bus_run(void *state) {
         if (r > 0)
             continue;
 
-        r = sd_bus_wait(bus, UINT64_MAX);
+        struct pollfd fds[2];
+        int nfds = 1;
+
+        fds[0].fd = sd_bus_get_fd(bus);
+        fds[0].events = sd_bus_get_events(bus);
+        fds[0].revents = 0;
+
+        if (sysfs_fd >= 0) {
+            fds[1].fd = sysfs_fd;
+            fds[1].events = POLLPRI | POLLERR;
+            fds[1].revents = 0;
+            nfds = 2;
+        }
+
+        uint64_t timeout_usec;
+        r = sd_bus_get_timeout(bus, &timeout_usec);
         if (r < 0) {
-            fprintf(stderr, "failed to wait on bus: %s\n", strerror(-r));
+            fprintf(stderr, "failed to get bus timeout: %s\n", strerror(-r));
             goto finish;
+        }
+
+        int timeout_msec;
+        if (timeout_usec == UINT64_MAX) {
+            timeout_msec = -1;
+        } else {
+            struct timespec ts;
+            if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) {
+                timeout_msec = -1;
+            } else {
+                uint64_t now_usec = (uint64_t)ts.tv_sec * 1000000ULL + ts.tv_nsec / 1000ULL;
+                if (timeout_usec <= now_usec) {
+                    timeout_msec = 0;
+                } else {
+                    timeout_msec = (int)((timeout_usec - now_usec + 999) / 1000);
+                }
+            }
+        }
+
+        r = poll(fds, nfds, timeout_msec);
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            fprintf(stderr, "failed to poll: %s\n", strerror(errno));
+            goto finish;
+        }
+
+        if (sysfs_fd >= 0 && (fds[1].revents & (POLLPRI | POLLERR))) {
+            (void)ppd_check_external_update(state);
         }
     }
 

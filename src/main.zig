@@ -24,7 +24,9 @@ pub fn main(init: std.process.Init) !void {
     };
 
     var daemon = daemon_mod.Daemon.init(platform_profile_path);
+    defer daemon.deinit();
     daemon.refresh();
+    daemon.watch();
 
     const rc = ppd_bus_run(&daemon);
     if (rc < 0) return error.DBusFailed;
@@ -67,6 +69,20 @@ export fn ppd_set_active_profile_id(ctx: *anyopaque, profile_id: c_int) c_int {
     };
     if (changed) ppd_emit_active_profile_changed();
     return @intFromEnum(CallbackStatus.ok);
+}
+
+export fn ppd_poll_fd(ctx: *anyopaque) c_int {
+    const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
+    return daemon.pollFd();
+}
+
+export fn ppd_check_external_update(ctx: *anyopaque) c_int {
+    const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
+    if (daemon.checkExternalUpdate()) {
+        ppd_emit_active_profile_changed();
+        return 1;
+    }
+    return 0;
 }
 
 test {
