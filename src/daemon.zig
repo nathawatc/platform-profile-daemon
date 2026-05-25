@@ -39,7 +39,6 @@ pub const Daemon = struct {
     }
 
     pub fn activeName(self: *Daemon) [:0]const u8 {
-        self.refresh();
         return if (self.active) |active| active.name() else "";
     }
 
