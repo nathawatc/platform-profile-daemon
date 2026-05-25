@@ -19,6 +19,24 @@ The daemon intentionally does not read `platform_profile_choices`, does not
 discover profiles, and does not tune CPU governors, cpufreq, amd_pstate, EPP, or
 vendor policy.
 
+## Design with kernel dynamic EPP
+
+This daemon is designed to be used with a kernel that provides `dynamic_epp`.
+The daemon does not write EPP values itself. Instead, desktop tools set a
+Power Profiles Daemon-compatible D-Bus profile, this daemon writes the matching
+kernel `platform_profile` value, and `dynamic_epp` observes that kernel profile
+change to apply the appropriate EPP behavior.
+
+Flow:
+
+```text
+desktop client -> D-Bus PowerProfiles API -> platform-profile-daemon
+              -> /sys/firmware/acpi/platform_profile -> kernel dynamic_epp
+```
+
+This keeps userspace small and predictable: the only policy boundary exposed by
+the daemon is the kernel platform profile.
+
 ## Build
 
 ```sh
