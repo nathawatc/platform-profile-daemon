@@ -1,3 +1,4 @@
+#include <systemd/sd-bus-vtable.h>
 #define _GNU_SOURCE
 #include <stddef.h>
 #include <stdint.h>
@@ -330,7 +331,7 @@ static int set_action_enabled(sd_bus_message *m, void *userdata, sd_bus_error *r
 
 static const sd_bus_vtable power_profiles_vtable[] = {
     SD_BUS_VTABLE_START(0),
-    SD_BUS_WRITABLE_PROPERTY("ActiveProfile", "s", get_active_profile, set_active_profile, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+    SD_BUS_WRITABLE_PROPERTY("ActiveProfile", "s", get_active_profile, set_active_profile, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE | SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_PROPERTY("PerformanceInhibited", "s", get_empty_string, 0, 0),
     SD_BUS_PROPERTY("PerformanceDegraded", "s", get_empty_string, 0, 0),
     SD_BUS_PROPERTY("Profiles", "aa{sv}", get_profiles, 0, 0),
@@ -338,10 +339,10 @@ static const sd_bus_vtable power_profiles_vtable[] = {
     SD_BUS_PROPERTY("ActionsInfo", "aa{sv}", get_empty_dict_array, 0, 0),
     SD_BUS_PROPERTY("ActiveProfileHolds", "aa{sv}", get_empty_dict_array, 0, 0),
     SD_BUS_PROPERTY("Version", "s", get_version, 0, 0),
-    SD_BUS_WRITABLE_PROPERTY("BatteryAware", "b", get_false, set_battery_aware, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
-    SD_BUS_METHOD("HoldProfile", "sss", "u", hold_profile, 0),
-    SD_BUS_METHOD("ReleaseProfile", "u", "", release_profile, 0),
-    SD_BUS_METHOD("SetActionEnabled", "sb", "", set_action_enabled, 0),
+    SD_BUS_WRITABLE_PROPERTY("BatteryAware", "b", get_false, set_battery_aware, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE | SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("HoldProfile", "sss", "u", hold_profile, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("ReleaseProfile", "u", "", release_profile, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("SetActionEnabled", "sb", "", set_action_enabled, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_VTABLE_END,
 };
 
