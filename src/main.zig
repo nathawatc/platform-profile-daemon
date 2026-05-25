@@ -1,6 +1,5 @@
 const std = @import("std");
 const daemon_mod = @import("daemon.zig");
-const profile = @import("profile.zig");
 
 const default_platform_profile_path = "/sys/firmware/acpi/platform_profile";
 
@@ -70,9 +69,4 @@ export fn ppd_set_active_profile_id(ctx: *anyopaque, profile_id: c_int) c_int {
     };
     if (changed) ppd_emit_active_profile_changed();
     return @intFromEnum(CallbackStatus.ok);
-}
-
-test {
-    _ = profile;
-    _ = daemon_mod;
 }

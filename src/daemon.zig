@@ -60,13 +60,12 @@ pub const Daemon = struct {
     }
 };
 
-fn mapSysfsError(err: anyerror) Error {
+fn mapSysfsError(err: sysfs_mod.Error) Error {
     return switch (err) {
         error.UnsupportedPlatform => Error.UnsupportedPlatform,
         error.UnknownKernelProfile => Error.UnknownKernelProfile,
         error.PermissionDenied => Error.PermissionDenied,
         error.WriteFailed => Error.WriteFailed,
-        else => Error.WriteFailed,
     };
 }
 
