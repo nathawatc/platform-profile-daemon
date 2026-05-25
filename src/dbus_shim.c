@@ -20,14 +20,16 @@ enum {
 };
 
 static int profile_id_from_string(const char *profile) {
-    switch (profile[0]) {
-    case 'b':
-        return memcmp(profile, "balanced", sizeof("balanced")) == 0 ? PROFILE_BALANCED : -1;
-    case 'p':
+    const size_t len = strlen(profile);
+
+    switch (len) {
+    case sizeof("balanced") - 1:
+        return memcmp(profile, "balanced", sizeof("balanced") - 1) == 0 ? PROFILE_BALANCED : -1;
+    case sizeof("power-saver") - 1:
         if (profile[1] == 'o')
-            return memcmp(profile, "power-saver", sizeof("power-saver")) == 0 ? PROFILE_POWER_SAVER : -1;
+            return memcmp(profile, "power-saver", sizeof("power-saver") - 1) == 0 ? PROFILE_POWER_SAVER : -1;
         if (profile[1] == 'e')
-            return memcmp(profile, "performance", sizeof("performance")) == 0 ? PROFILE_PERFORMANCE : -1;
+            return memcmp(profile, "performance", sizeof("performance") - 1) == 0 ? PROFILE_PERFORMANCE : -1;
         return -1;
     default:
         return -1;
