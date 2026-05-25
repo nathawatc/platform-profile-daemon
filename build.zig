@@ -13,8 +13,12 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .single_threaded = true,
             .strip = strip,
+            .unwind_tables = if (optimize == .Debug) null else .none,
+            .omit_frame_pointer = optimize != .Debug,
+            .error_tracing = optimize == .Debug,
         }),
     });
+    exe.lto = if (optimize == .Debug) .none else .full;
     addSystemdShim(b, exe.root_module);
 
     b.installArtifact(exe);
