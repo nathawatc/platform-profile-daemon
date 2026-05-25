@@ -73,16 +73,33 @@ pub const Sysfs = struct {
 };
 
 fn writeAll(fd: std.c.fd_t, bytes: []const u8) Error!void {
+    try writeAllWith(fd, bytes, cWrite, cErrno);
+}
+
+fn writeAllWith(
+    fd: std.c.fd_t,
+    bytes: []const u8,
+    write_fn: *const fn (std.c.fd_t, [*]const u8, usize) isize,
+    errno_fn: *const fn () std.c.E,
+) Error!void {
     var written: usize = 0;
     while (written < bytes.len) {
-        const rc = std.c.write(fd, bytes[written..].ptr, bytes.len - written);
+        const rc = write_fn(fd, bytes[written..].ptr, bytes.len - written);
         if (rc < 0) {
-            if (std.c.errno(-1) == .INTR) continue;
+            if (errno_fn() == .INTR) continue;
             return mapWriteError();
         }
         if (rc == 0) return Error.WriteFailed;
         written += @intCast(rc);
     }
+}
+
+fn cWrite(fd: std.c.fd_t, ptr: [*]const u8, len: usize) isize {
+    return std.c.write(fd, ptr, len);
+}
+
+fn cErrno() std.c.E {
+    return std.c.errno(-1);
 }
 
 fn mapOpenReadError() Error {
@@ -165,4 +182,40 @@ test "checkAndRefresh returns null for empty content" {
     defer watched.deinit();
     try watched.watch();
     try std.testing.expectEqual(@as(?profile.KernelProfile, null), watched.checkAndRefresh());
+}
+
+test "writeAll retries on EINTR and completes write" {
+    const State = struct {
+        var first_call = true;
+        var last_errno: std.c.E = .SUCCESS;
+
+        fn fakeWrite(fd: std.c.fd_t, ptr: [*]const u8, len: usize) isize {
+            if (first_call) {
+                first_call = false;
+                last_errno = .INTR;
+                return -1;
+            }
+            last_errno = .SUCCESS;
+            return std.c.write(fd, ptr, len);
+        }
+
+        fn fakeErrno() std.c.E {
+            return last_errno;
+        }
+    };
+
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-eintr-{d}", .{std.c.getpid()});
+    defer _ = std.c.unlink(path.ptr);
+
+    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(fd >= 0);
+    defer _ = std.c.close(fd);
+
+    State.first_call = true;
+    State.last_errno = .SUCCESS;
+    try writeAllWith(fd, "balanced\n", State.fakeWrite, State.fakeErrno);
+
+    const sysfs = Sysfs.init(path);
+    try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
 }
