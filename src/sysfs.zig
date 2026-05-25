@@ -30,7 +30,7 @@ pub const Sysfs = struct {
     }
 
     pub fn writeProfile(self: Sysfs, value: profile.KernelProfile) Error!void {
-        const fd = std.c.open(self.path.ptr, .{ .ACCMODE = .WRONLY, .CLOEXEC = true });
+        const fd = std.c.open(self.path.ptr, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true });
         if (fd < 0) return mapOpenWriteError();
         defer _ = std.c.close(fd);
 
