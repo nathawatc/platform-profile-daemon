@@ -12,6 +12,11 @@
 #define OBJECT_PATH "/org/freedesktop/UPower/PowerProfiles"
 #define INTERFACE "org.freedesktop.UPower.PowerProfiles"
 #define VERSION "0.1.0"
+#define POLKIT_SERVICE "org.freedesktop.PolicyKit1"
+#define POLKIT_PATH "/org/freedesktop/PolicyKit1/Authority"
+#define POLKIT_INTERFACE "org.freedesktop.PolicyKit1.Authority"
+#define POLKIT_ACTION_SWITCH_PROFILE "org.freedesktop.UPower.PowerProfiles.switch-profile"
+#define POLKIT_CHECK_ALLOW_USER_INTERACTION 1U
 
 extern const char *ppd_get_active_profile(void *ctx);
 extern int ppd_set_active_profile_id(void *ctx, int profile_id);
@@ -62,6 +67,91 @@ static int append_profile(sd_bus_message *reply, const char *name) {
     return sd_bus_message_close_container(reply);
 }
 
+static int check_polkit_authorization(sd_bus *bus, sd_bus_message *request, sd_bus_error *reterr_error) {
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    sd_bus_message *call = NULL;
+    sd_bus_message *reply = NULL;
+    const char *sender = sd_bus_message_get_sender(request);
+    int authorized = 0;
+    int challenge = 0;
+    int r;
+
+    if (!sender)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_FAILED, "failed to resolve D-Bus sender");
+
+    r = sd_bus_message_new_method_call(bus, &call, POLKIT_SERVICE, POLKIT_PATH, POLKIT_INTERFACE, "CheckAuthorization");
+    if (r < 0)
+        return r;
+
+    r = sd_bus_message_open_container(call, 'r', "sa{sv}");
+    if (r < 0) goto finish;
+    r = sd_bus_message_append(call, "s", "system-bus-name");
+    if (r < 0) goto finish;
+    r = sd_bus_message_open_container(call, 'a', "{sv}");
+    if (r < 0) goto finish;
+    r = sd_bus_message_open_container(call, 'e', "sv");
+    if (r < 0) goto finish;
+    r = sd_bus_message_append(call, "s", "name");
+    if (r < 0) goto finish;
+    r = sd_bus_message_open_container(call, 'v', "s");
+    if (r < 0) goto finish;
+    r = sd_bus_message_append(call, "s", sender);
+    if (r < 0) goto finish;
+    r = sd_bus_message_close_container(call);
+    if (r < 0) goto finish;
+    r = sd_bus_message_close_container(call);
+    if (r < 0) goto finish;
+    r = sd_bus_message_close_container(call);
+    if (r < 0) goto finish;
+    r = sd_bus_message_close_container(call);
+    if (r < 0) goto finish;
+
+    r = sd_bus_message_append(call, "s", POLKIT_ACTION_SWITCH_PROFILE);
+    if (r < 0) goto finish;
+
+    r = sd_bus_message_open_container(call, 'a', "{ss}");
+    if (r < 0) goto finish;
+    r = sd_bus_message_close_container(call);
+    if (r < 0) goto finish;
+
+    r = sd_bus_message_append(call, "u", POLKIT_CHECK_ALLOW_USER_INTERACTION);
+    if (r < 0) goto finish;
+    r = sd_bus_message_append(call, "s", "");
+    if (r < 0) goto finish;
+
+    r = sd_bus_call(bus, call, 0, &error, &reply);
+    if (r < 0) {
+        const char *msg = error.message ? error.message : "unknown error";
+        r = sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
+                              "polkit authorization failed: %s", msg);
+        goto finish;
+    }
+
+    r = sd_bus_message_enter_container(reply, 'r', "bba{ss}");
+    if (r < 0) goto finish;
+    r = sd_bus_message_read(reply, "bb", &authorized, &challenge);
+    if (r < 0) goto finish;
+    r = sd_bus_message_skip(reply, "a{ss}");
+    if (r < 0) goto finish;
+    r = sd_bus_message_exit_container(reply);
+    if (r < 0) goto finish;
+
+    if (!authorized) {
+        r = sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
+                              challenge ? "authentication required to switch power profile"
+                                        : "not authorized to switch power profile");
+        goto finish;
+    }
+
+    r = 0;
+
+finish:
+    sd_bus_error_free(&error);
+    sd_bus_message_unref(call);
+    sd_bus_message_unref(reply);
+    return r;
+}
+
 static int get_active_profile(sd_bus *bus, const char *path, const char *interface,
                               const char *property, sd_bus_message *reply,
                               void *userdata, sd_bus_error *reterr_error) {
@@ -92,6 +182,10 @@ static int set_active_profile(sd_bus *bus, const char *path, const char *interfa
     if (profile_id < 0)
         return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
                                  "unsupported profile '%s'", profile);
+
+    r = check_polkit_authorization(bus, value, reterr_error);
+    if (r < 0)
+        return r;
 
     switch (ppd_set_active_profile_id(userdata, profile_id)) {
     case 0:

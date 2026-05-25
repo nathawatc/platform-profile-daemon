@@ -89,17 +89,18 @@ This daemon is designed as a minimal personal Power Profiles Daemon-compatible
 bridge.
 
 For compatibility with desktop clients and widgets, local clients are currently
-allowed to request `ActiveProfile` changes over D-Bus. The daemon validates
-requested profile names strictly and only accepts `power-saver`, `balanced`,
-and `performance`.
+allowed to read profile state over D-Bus without authorization prompts.
 
-Polkit authorization is not currently implemented. This is intentional for the
-current personal/single-user usage model.
+Mutating operations are protected with Polkit. Setting `ActiveProfile` requires
+authorization for the action id:
 
-For hardened multi-user deployments, mutating operations such as setting
-`ActiveProfile` should be protected with Polkit authorization. Future support
-should use the Power Profiles Daemon-compatible action name
 `org.freedesktop.UPower.PowerProfiles.switch-profile`.
+
+Requested profile names are validated strictly before authorization and sysfs
+writes. Accepted values are only `power-saver`, `balanced`, and `performance`.
+
+Read-only D-Bus operations (`Get`, `GetAll`) remain available to normal
+clients.
 
 ## Manual validation checklist
 
@@ -129,10 +130,18 @@ busctl --system set-property org.freedesktop.UPower.PowerProfiles \
   /org/freedesktop/UPower/PowerProfiles \
   org.freedesktop.UPower.PowerProfiles ActiveProfile s performance
 
+# Set valid profile via powerprofilesctl (active local session)
+powerprofilesctl set balanced
+
 # Reject invalid profile
 busctl --system set-property org.freedesktop.UPower.PowerProfiles \
   /org/freedesktop/UPower/PowerProfiles \
   org.freedesktop.UPower.PowerProfiles ActiveProfile s invalid-profile
+
+# Wrong type should fail
+busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile b true
 
 # Inspect kernel platform profile
 cat /sys/firmware/acpi/platform_profile
@@ -144,3 +153,8 @@ journalctl -u platform-profile-daemon.service --since "10 min ago"
 Then verify desktop widget/client behavior by switching profiles from the UI and
 confirming both D-Bus `ActiveProfile` and
 `/sys/firmware/acpi/platform_profile` stay in sync.
+
+Optional authorization validation:
+- from a non-active session/user, attempt `Set ActiveProfile` and confirm it is
+  denied.
+- confirm `/sys/firmware/acpi/platform_profile` is unchanged on denied writes.

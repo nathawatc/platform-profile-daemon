@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
     b.installFile("data/platform-profile-daemon.service", "lib/systemd/system/platform-profile-daemon.service");
     b.installFile("data/org.freedesktop.UPower.PowerProfiles.service", "share/dbus-1/system-services/org.freedesktop.UPower.PowerProfiles.service");
     b.installFile("data/org.freedesktop.UPower.PowerProfiles.conf", "share/dbus-1/system.d/org.freedesktop.UPower.PowerProfiles.conf");
+    b.installFile("data/org.freedesktop.UPower.PowerProfiles.policy", "share/polkit-1/actions/org.freedesktop.UPower.PowerProfiles.policy");
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
