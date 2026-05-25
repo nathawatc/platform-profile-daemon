@@ -1,6 +1,5 @@
 const std = @import("std");
 const daemon_mod = @import("daemon.zig");
-const profile = @import("profile.zig");
 
 const default_platform_profile_path = "/sys/firmware/acpi/platform_profile";
 
@@ -25,7 +24,10 @@ pub fn main(init: std.process.Init) !void {
 
     var daemon = daemon_mod.Daemon.init(platform_profile_path);
     defer daemon.deinit();
-    daemon.refresh();
+    daemon.refresh() catch |err| {
+        std.log.err("platform_profile unavailable: {}", .{err});
+        return err;
+    };
     daemon.watch();
 
     const rc = ppd_bus_run(&daemon);
@@ -70,7 +72,6 @@ export fn ppd_set_active_profile_id(ctx: *anyopaque, profile_id: c_int) c_int {
     if (changed) ppd_emit_active_profile_changed();
     return @intFromEnum(CallbackStatus.ok);
 }
-
 export fn ppd_poll_fd(ctx: *anyopaque) c_int {
     const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
     return daemon.pollFd();
@@ -83,9 +84,4 @@ export fn ppd_check_external_update(ctx: *anyopaque) c_int {
         return 1;
     }
     return 0;
-}
-
-test {
-    _ = profile;
-    _ = daemon_mod;
 }

@@ -257,7 +257,6 @@ static const sd_bus_vtable power_profiles_vtable[] = {
     SD_BUS_METHOD("HoldProfile", "sss", "u", hold_profile, 0),
     SD_BUS_METHOD("ReleaseProfile", "u", "", release_profile, 0),
     SD_BUS_METHOD("SetActionEnabled", "sb", "", set_action_enabled, 0),
-    SD_BUS_SIGNAL("ProfileReleased", "u", 0),
     SD_BUS_VTABLE_END,
 };
 
