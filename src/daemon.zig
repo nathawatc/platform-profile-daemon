@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const profile = @import("profile.zig");
 const sysfs_mod = @import("sysfs.zig");
 
@@ -71,7 +72,9 @@ pub const Daemon = struct {
 
     pub fn checkExternalUpdate(self: *Daemon) bool {
         const kernel_profile = (&self.sysfs).checkAndRefresh() orelse {
-            std.log.warn("ignoring invalid platform_profile refresh event", .{});
+            if (!builtin.is_test) {
+                std.log.warn("ignoring invalid platform_profile refresh event", .{});
+            }
             return false;
         };
         const new_active = profile.dbusForKernel(kernel_profile);
