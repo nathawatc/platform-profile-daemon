@@ -183,7 +183,11 @@ static int set_active_profile(sd_bus *bus, const char *path, const char *interfa
         return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
                                  "unsupported profile '%s'", profile);
 
-    r = check_polkit_authorization(bus, value, reterr_error);
+    sd_bus_message *request = sd_bus_get_current_message(bus);
+    if (!request)
+        request = value;
+
+    r = check_polkit_authorization(bus, request, reterr_error);
     if (r < 0)
         return r;
 
