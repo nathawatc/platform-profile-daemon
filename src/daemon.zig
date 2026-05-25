@@ -20,12 +20,7 @@ pub const Daemon = struct {
 
     pub fn refresh(self: *Daemon) Error!void {
         const kernel_profile = self.sysfs.readCurrent() catch |err| {
-            return switch (err) {
-                error.UnsupportedPlatform => Error.UnsupportedPlatform,
-                error.UnknownKernelProfile => Error.UnknownKernelProfile,
-                error.PermissionDenied => Error.PermissionDenied,
-                error.WriteFailed => Error.WriteFailed,
-            };
+            return mapSysfsError(err);
         };
 
         self.active = profile.dbusForKernel(kernel_profile);
@@ -42,24 +37,38 @@ pub const Daemon = struct {
     }
 
     fn setActiveProfile(self: *Daemon, requested: profile.DbusProfile) Error!bool {
-        try self.refresh();
-        if (self.active.? == requested) return false;
+        const current_kernel_profile: ?profile.KernelProfile = self.sysfs.readCurrent() catch |err| blk: {
+            const mapped = mapSysfsError(err);
+            if (mapped != Error.UnknownKernelProfile) return mapped;
+            break :blk null;
+        };
+
+        if (current_kernel_profile) |kernel_profile| {
+            const current = profile.dbusForKernel(kernel_profile);
+            self.active = current;
+            if (current == requested) return false;
+        }
 
         const kernel_profile = profile.kernelForDbus(requested);
 
         self.sysfs.writeProfile(kernel_profile) catch |err| {
-            return switch (err) {
-                error.UnsupportedPlatform => Error.UnsupportedPlatform,
-                error.UnknownKernelProfile => Error.UnknownKernelProfile,
-                error.PermissionDenied => Error.PermissionDenied,
-                error.WriteFailed => Error.WriteFailed,
-            };
+            return mapSysfsError(err);
         };
 
         self.active = requested;
         return true;
     }
 };
+
+fn mapSysfsError(err: anyerror) Error {
+    return switch (err) {
+        error.UnsupportedPlatform => Error.UnsupportedPlatform,
+        error.UnknownKernelProfile => Error.UnknownKernelProfile,
+        error.PermissionDenied => Error.PermissionDenied,
+        error.WriteFailed => Error.WriteFailed,
+        else => Error.WriteFailed,
+    };
+}
 
 test "unknown dbus profile is rejected" {
     var daemon = Daemon.init("/tmp/does-not-matter");
@@ -98,6 +107,26 @@ test "stale cached active profile does not skip write" {
 
     var daemon = Daemon.init(path);
     daemon.active = .balanced;
+    try std.testing.expectEqual(true, try daemon.setActiveId(1));
+    try std.testing.expectEqualStrings("balanced", daemon.activeName());
+
+    const sysfs = sysfs_mod.Sysfs.init(path);
+    try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
+}
+
+test "unknown current kernel profile still allows write" {
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-unknown-{d}", .{std.c.getpid()});
+    defer _ = std.c.unlink(path.ptr);
+
+    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(fd >= 0);
+    defer _ = std.c.close(fd);
+
+    const written = std.c.write(fd, "quiet\n", "quiet\n".len);
+    try std.testing.expectEqual(@as(isize, "quiet\n".len), written);
+
+    var daemon = Daemon.init(path);
     try std.testing.expectEqual(true, try daemon.setActiveId(1));
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
 

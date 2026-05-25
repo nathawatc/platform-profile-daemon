@@ -20,7 +20,7 @@ Do not add dynamic profile discovery or read `platform_profile_choices`.
 
 - `zig build test`: run Zig unit tests.
 - `zig build -Doptimize=ReleaseFast`: build the optimized daemon.
-- `zig build run -- --platform-profile /tmp/platform_profile`: run against a fake sysfs file. <!-- rumdl-disable-line MD013 -->
+- `sudo ./zig-out/bin/platform-profile-daemon --platform-profile /tmp/platform_profile`: run against a fake sysfs file (system bus). <!-- rumdl-disable-line MD013 -->
 - `busctl --system ...`: test D-Bus behavior on the system bus. <!-- rumdl-disable-line MD013 -->
 
 Use fake sysfs files for local tests. Do not write real

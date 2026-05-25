@@ -53,7 +53,8 @@ zig build test
 
 ```sh
 printf 'balanced\n' > /tmp/platform_profile
-zig build run -- --platform-profile /tmp/platform_profile
+zig build -Doptimize=ReleaseFast
+sudo ./zig-out/bin/platform-profile-daemon --platform-profile /tmp/platform_profile
 ```
 
 ## Query
