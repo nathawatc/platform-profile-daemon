@@ -34,6 +34,15 @@ pub const Daemon = struct {
 
     pub fn setActive(self: *Daemon, requested_name: []const u8) Error!bool {
         const requested = profile.DbusProfile.parse(requested_name) orelse return Error.UnknownProfile;
+        return self.setActiveProfile(requested);
+    }
+
+    pub fn setActiveId(self: *Daemon, requested_id: c_int) Error!bool {
+        const requested = profile.DbusProfile.fromId(requested_id) orelse return Error.UnknownProfile;
+        return self.setActiveProfile(requested);
+    }
+
+    fn setActiveProfile(self: *Daemon, requested: profile.DbusProfile) Error!bool {
         if (self.active == requested) return false;
 
         const kernel_profile = profile.kernelForDbus(requested);

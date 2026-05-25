@@ -55,10 +55,9 @@ export fn ppd_get_active_profile(ctx: *anyopaque) [*:0]const u8 {
     return daemon.activeName().ptr;
 }
 
-export fn ppd_set_active_profile(ctx: *anyopaque, raw_profile: [*:0]const u8) c_int {
+export fn ppd_set_active_profile_id(ctx: *anyopaque, profile_id: c_int) c_int {
     const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
-    const requested = std.mem.span(raw_profile);
-    const changed = daemon.setActive(requested) catch |err| {
+    const changed = daemon.setActiveId(profile_id) catch |err| {
         return @intFromEnum(switch (err) {
             error.UnsupportedPlatform, error.UnknownKernelProfile => CallbackStatus.unsupported,
             error.UnknownProfile => CallbackStatus.invalid_profile,

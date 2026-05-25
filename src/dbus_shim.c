@@ -10,8 +10,29 @@
 #define VERSION "0.1.0"
 
 extern const char *ppd_get_active_profile(void *ctx);
-extern int ppd_set_active_profile(void *ctx, const char *profile);
+extern int ppd_set_active_profile_id(void *ctx, int profile_id);
 static sd_bus *global_bus = NULL;
+
+enum {
+    PROFILE_POWER_SAVER = 0,
+    PROFILE_BALANCED = 1,
+    PROFILE_PERFORMANCE = 2,
+};
+
+static int profile_id_from_string(const char *profile) {
+    switch (profile[0]) {
+    case 'b':
+        return strcmp(profile, "balanced") == 0 ? PROFILE_BALANCED : -1;
+    case 'p':
+        if (profile[1] == 'o')
+            return strcmp(profile, "power-saver") == 0 ? PROFILE_POWER_SAVER : -1;
+        if (profile[1] == 'e')
+            return strcmp(profile, "performance") == 0 ? PROFILE_PERFORMANCE : -1;
+        return -1;
+    default:
+        return -1;
+    }
+}
 
 static int append_empty_aa_sv(sd_bus_message *reply) {
     int r = sd_bus_message_open_container(reply, 'a', "a{sv}");
@@ -72,7 +93,12 @@ static int set_active_profile(sd_bus *bus, const char *path, const char *interfa
     int r = sd_bus_message_read(value, "s", &profile);
     if (r < 0) return r;
 
-    switch (ppd_set_active_profile(userdata, profile)) {
+    int profile_id = profile_id_from_string(profile);
+    if (profile_id < 0)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
+                                 "unsupported profile '%s'", profile);
+
+    switch (ppd_set_active_profile_id(userdata, profile_id)) {
     case 0:
         return 1;
     case 1:

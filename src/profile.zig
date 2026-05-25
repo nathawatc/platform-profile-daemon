@@ -5,6 +5,15 @@ pub const DbusProfile = enum {
     balanced,
     performance,
 
+    pub fn fromId(id: c_int) ?DbusProfile {
+        return switch (id) {
+            0 => .power_saver,
+            1 => .balanced,
+            2 => .performance,
+            else => null,
+        };
+    }
+
     pub fn parse(value: []const u8) ?DbusProfile {
         return switch (value.len) {
             "balanced".len => if (std.mem.eql(u8, value, "balanced")) .balanced else null,
