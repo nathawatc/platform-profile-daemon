@@ -6,10 +6,15 @@ pub const DbusProfile = enum {
     performance,
 
     pub fn parse(value: []const u8) ?DbusProfile {
-        if (std.mem.eql(u8, value, "power-saver")) return .power_saver;
-        if (std.mem.eql(u8, value, "balanced")) return .balanced;
-        if (std.mem.eql(u8, value, "performance")) return .performance;
-        return null;
+        return switch (value.len) {
+            "balanced".len => if (std.mem.eql(u8, value, "balanced")) .balanced else null,
+            "power-saver".len => blk: {
+                if (std.mem.eql(u8, value, "power-saver")) break :blk .power_saver;
+                if (std.mem.eql(u8, value, "performance")) break :blk .performance;
+                break :blk null;
+            },
+            else => null,
+        };
     }
 
     pub fn name(self: DbusProfile) [:0]const u8 {
@@ -27,10 +32,12 @@ pub const KernelProfile = enum {
     performance,
 
     pub fn parse(value: []const u8) ?KernelProfile {
-        if (std.mem.eql(u8, value, "low-power")) return .low_power;
-        if (std.mem.eql(u8, value, "balanced")) return .balanced;
-        if (std.mem.eql(u8, value, "performance")) return .performance;
-        return null;
+        return switch (value.len) {
+            "balanced".len => if (std.mem.eql(u8, value, "balanced")) .balanced else null,
+            "low-power".len => if (std.mem.eql(u8, value, "low-power")) .low_power else null,
+            "performance".len => if (std.mem.eql(u8, value, "performance")) .performance else null,
+            else => null,
+        };
     }
 
     pub fn name(self: KernelProfile) [:0]const u8 {
