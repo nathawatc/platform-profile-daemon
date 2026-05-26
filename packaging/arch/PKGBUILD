@@ -1,7 +1,7 @@
 # Maintainer: nathawat <nathawat[at]noreply[dot]codeberg[dot]org>
 
 pkgname=platform-profile-daemon
-pkgver=0.1.0
+pkgver=1.0.0
 pkgrel=2
 pkgdesc="Minimal Power Profiles D-Bus daemon backed kernel ACPI platform profile"
 arch=('x86_64' 'aarch64')
