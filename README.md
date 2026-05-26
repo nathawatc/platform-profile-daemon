@@ -21,6 +21,11 @@ performance -> performance
 > This project is intentionally small. It does not discover profiles from
 > `platform_profile_choices`; it only supports the fixed mapping above.
 
+> [!NOTE]
+> This project is designed for users who enable the kernel Dynamic EPP function.
+> The daemon writes `platform_profile`; the kernel then reads that platform
+> profile and updates EPP automatically.
+
 ## Build
 
 ```sh
@@ -64,20 +69,28 @@ busctl --system status org.freedesktop.UPower.PowerProfiles
 Check the current profile:
 
 ```sh
-powerprofilesctl get
+busctl --system get-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile
 cat /sys/firmware/acpi/platform_profile
 ```
 
 Test all supported profiles:
 
 ```sh
-powerprofilesctl set power-saver
+busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile s power-saver
 cat /sys/firmware/acpi/platform_profile
 
-powerprofilesctl set balanced
+busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile s balanced
 cat /sys/firmware/acpi/platform_profile
 
-powerprofilesctl set performance
+busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile s performance
 cat /sys/firmware/acpi/platform_profile
 ```
 
@@ -96,8 +109,8 @@ sudo ./tools/dbus-smoke.sh
 ```
 
 After CLI validation, switch profiles from the desktop widget or power menu and
-confirm that `powerprofilesctl get` and
-`/sys/firmware/acpi/platform_profile` stay in sync.
+confirm that D-Bus `ActiveProfile` and `/sys/firmware/acpi/platform_profile`
+stay in sync.
 
 ## Troubleshooting
 
@@ -130,7 +143,9 @@ journalctl -u platform-profile-daemon.service --since "10 min ago"
 Also confirm the active desktop session can switch profiles with:
 
 ```sh
-powerprofilesctl set balanced
+busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+  /org/freedesktop/UPower/PowerProfiles \
+  org.freedesktop.UPower.PowerProfiles ActiveProfile s balanced
 ```
 
 ### Invalid or empty startup profile
