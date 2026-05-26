@@ -2,14 +2,17 @@
 
 pkgname=platform-profile-daemon
 pkgver=1.0.0
-pkgrel=2
+pkgrel=1
 pkgdesc="Minimal Power Profiles D-Bus daemon backed kernel ACPI platform profile"
-arch=('x86_64' 'aarch64')
+arch=('x86_64')
 url="https://codeberg.org/nathawat/platform-profile-daemon"
 license=('Apache-2.0')
 depends=('dbus' 'polkit' 'systemd')
+provides=('power-profiles-daemon')
+conflicts=('power-profiles-daemon')
 makedepends=('git' 'pkgconf' 'systemd' 'zig')
-source=("${pkgname}::git+${url}.git#branch=feat/external-changes")
+_tag="v${pkgver}"
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/${_tag}.tar.gz")
 b2sums=("SKIP")
 
 build() {
