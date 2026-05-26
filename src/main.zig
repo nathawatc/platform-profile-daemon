@@ -1,5 +1,6 @@
 const std = @import("std");
 const daemon_mod = @import("daemon.zig");
+const profile_mod = @import("profile.zig");
 
 const default_platform_profile_path = "/sys/firmware/acpi/platform_profile";
 
@@ -12,7 +13,18 @@ const CallbackStatus = enum(c_int) {
     invalid_profile = 2,
     permission_denied = 3,
     write_failed = 4,
+    read_failed = 5,
 };
+
+export fn ppd_profile_id_from_name(name: [*:0]const u8) c_int {
+    const text = std.mem.sliceTo(name, 0);
+    const dbus_profile = profile_mod.DbusProfile.parseName(text) orelse return -1;
+    return switch (dbus_profile) {
+        .power_saver => 0,
+        .balanced => 1,
+        .performance => 2,
+    };
+}
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
@@ -23,10 +35,12 @@ pub fn main(init: std.process.Init) !void {
     };
 
     var daemon = daemon_mod.Daemon.init(platform_profile_path);
+    defer daemon.deinit();
     daemon.refresh() catch |err| {
         std.log.err("platform_profile unavailable: {}", .{err});
         return err;
     };
+    daemon.watch();
 
     const rc = ppd_bus_run(&daemon);
     if (rc < 0) return error.DBusFailed;
@@ -65,8 +79,22 @@ export fn ppd_set_active_profile_id(ctx: *anyopaque, profile_id: c_int) c_int {
             error.UnknownProfile => CallbackStatus.invalid_profile,
             error.PermissionDenied => CallbackStatus.permission_denied,
             error.WriteFailed => CallbackStatus.write_failed,
+            error.ReadFailed => CallbackStatus.read_failed,
         });
     };
     if (changed) ppd_emit_active_profile_changed();
     return @intFromEnum(CallbackStatus.ok);
+}
+export fn ppd_poll_fd(ctx: *anyopaque) c_int {
+    const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
+    return daemon.pollFd();
+}
+
+export fn ppd_check_external_update(ctx: *anyopaque) c_int {
+    const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
+    if (daemon.checkExternalUpdate()) {
+        ppd_emit_active_profile_changed();
+        return 1;
+    }
+    return 0;
 }

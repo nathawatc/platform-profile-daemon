@@ -1,40 +1,29 @@
+#define _GNU_SOURCE
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <systemd/sd-bus.h>
+#include <poll.h>
+#include <time.h>
+#include <errno.h>
 
 #define BUS_NAME "org.freedesktop.UPower.PowerProfiles"
 #define OBJECT_PATH "/org/freedesktop/UPower/PowerProfiles"
 #define INTERFACE "org.freedesktop.UPower.PowerProfiles"
 #define VERSION "0.1.0"
+#define POLKIT_SERVICE "org.freedesktop.PolicyKit1"
+#define POLKIT_PATH "/org/freedesktop/PolicyKit1/Authority"
+#define POLKIT_INTERFACE "org.freedesktop.PolicyKit1.Authority"
+#define POLKIT_ACTION_SWITCH_PROFILE "net.hadess.PowerProfiles.switch-profile"
+#define POLKIT_CHECK_ALLOW_USER_INTERACTION 1U
 
 extern const char *ppd_get_active_profile(void *ctx);
 extern int ppd_set_active_profile_id(void *ctx, int profile_id);
+extern int ppd_poll_fd(void *ctx);
+extern int ppd_check_external_update(void *ctx);
+extern int ppd_profile_id_from_name(const char *name);
 static sd_bus *global_bus = NULL;
-
-enum {
-    PROFILE_POWER_SAVER = 0,
-    PROFILE_BALANCED = 1,
-    PROFILE_PERFORMANCE = 2,
-};
-
-static int profile_id_from_string(const char *profile) {
-    const size_t len = strlen(profile);
-
-    switch (len) {
-    case sizeof("balanced") - 1:
-        return memcmp(profile, "balanced", sizeof("balanced") - 1) == 0 ? PROFILE_BALANCED : -1;
-    case sizeof("power-saver") - 1:
-        if (profile[1] == 'o')
-            return memcmp(profile, "power-saver", sizeof("power-saver") - 1) == 0 ? PROFILE_POWER_SAVER : -1;
-        if (profile[1] == 'e')
-            return memcmp(profile, "performance", sizeof("performance") - 1) == 0 ? PROFILE_PERFORMANCE : -1;
-        return -1;
-    default:
-        return -1;
-    }
-}
 
 static int append_empty_aa_sv(sd_bus_message *reply) {
     int r = sd_bus_message_open_container(reply, 'a', "a{sv}");
@@ -72,6 +61,91 @@ static int append_profile(sd_bus_message *reply, const char *name) {
     return sd_bus_message_close_container(reply);
 }
 
+static int check_polkit_authorization(sd_bus *bus, sd_bus_message *request, sd_bus_error *reterr_error) {
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    sd_bus_message *call = NULL;
+    sd_bus_message *reply = NULL;
+    const char *sender = sd_bus_message_get_sender(request);
+    int authorized = 0;
+    int challenge = 0;
+    int r;
+
+    if (!sender)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_FAILED, "failed to resolve D-Bus sender");
+
+    r = sd_bus_message_new_method_call(bus, &call, POLKIT_SERVICE, POLKIT_PATH, POLKIT_INTERFACE, "CheckAuthorization");
+    if (r < 0)
+        return r;
+
+    r = sd_bus_message_open_container(call, 'r', "sa{sv}");
+    if (r < 0) goto finish;
+    r = sd_bus_message_append(call, "s", "system-bus-name");
+    if (r < 0) goto finish;
+    r = sd_bus_message_open_container(call, 'a', "{sv}");
+    if (r < 0) goto finish;
+    r = sd_bus_message_open_container(call, 'e', "sv");
+    if (r < 0) goto finish;
+    r = sd_bus_message_append(call, "s", "name");
+    if (r < 0) goto finish;
+    r = sd_bus_message_open_container(call, 'v', "s");
+    if (r < 0) goto finish;
+    r = sd_bus_message_append(call, "s", sender);
+    if (r < 0) goto finish;
+    r = sd_bus_message_close_container(call);
+    if (r < 0) goto finish;
+    r = sd_bus_message_close_container(call);
+    if (r < 0) goto finish;
+    r = sd_bus_message_close_container(call);
+    if (r < 0) goto finish;
+    r = sd_bus_message_close_container(call);
+    if (r < 0) goto finish;
+
+    r = sd_bus_message_append(call, "s", POLKIT_ACTION_SWITCH_PROFILE);
+    if (r < 0) goto finish;
+
+    r = sd_bus_message_open_container(call, 'a', "{ss}");
+    if (r < 0) goto finish;
+    r = sd_bus_message_close_container(call);
+    if (r < 0) goto finish;
+
+    r = sd_bus_message_append(call, "u", POLKIT_CHECK_ALLOW_USER_INTERACTION);
+    if (r < 0) goto finish;
+    r = sd_bus_message_append(call, "s", "");
+    if (r < 0) goto finish;
+
+    r = sd_bus_call(bus, call, 0, &error, &reply);
+    if (r < 0) {
+        const char *msg = error.message ? error.message : "unknown error";
+        r = sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
+                              "polkit authorization failed: %s", msg);
+        goto finish;
+    }
+
+    r = sd_bus_message_enter_container(reply, 'r', "bba{ss}");
+    if (r < 0) goto finish;
+    r = sd_bus_message_read(reply, "bb", &authorized, &challenge);
+    if (r < 0) goto finish;
+    r = sd_bus_message_skip(reply, "a{ss}");
+    if (r < 0) goto finish;
+    r = sd_bus_message_exit_container(reply);
+    if (r < 0) goto finish;
+
+    if (!authorized) {
+        r = sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
+                              challenge ? "authentication required to switch power profile"
+                                        : "not authorized to switch power profile");
+        goto finish;
+    }
+
+    r = 0;
+
+finish:
+    sd_bus_error_free(&error);
+    sd_bus_message_unref(call);
+    sd_bus_message_unref(reply);
+    return r;
+}
+
 static int get_active_profile(sd_bus *bus, const char *path, const char *interface,
                               const char *property, sd_bus_message *reply,
                               void *userdata, sd_bus_error *reterr_error) {
@@ -86,19 +160,31 @@ static int get_active_profile(sd_bus *bus, const char *path, const char *interfa
 static int set_active_profile(sd_bus *bus, const char *path, const char *interface,
                               const char *property, sd_bus_message *value,
                               void *userdata, sd_bus_error *reterr_error) {
-    (void)bus;
-    (void)path;
-    (void)interface;
-    (void)property;
+    if (strcmp(path, OBJECT_PATH) != 0)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS, "unsupported object path");
+    if (strcmp(interface, INTERFACE) != 0)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS, "unsupported interface");
+    if (strcmp(property, "ActiveProfile") != 0)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_PROPERTY_READ_ONLY, "unsupported property");
 
     const char *profile = NULL;
     int r = sd_bus_message_read(value, "s", &profile);
-    if (r < 0) return r;
+    if (r < 0)
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
+                                 "ActiveProfile expects a string value");
 
-    int profile_id = profile_id_from_string(profile);
+    int profile_id = ppd_profile_id_from_name(profile);
     if (profile_id < 0)
         return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
                                  "unsupported profile '%s'", profile);
+
+    sd_bus_message *request = sd_bus_get_current_message(bus);
+    if (!request)
+        request = value;
+
+    r = check_polkit_authorization(bus, request, reterr_error);
+    if (r < 0)
+        return r;
 
     switch (ppd_set_active_profile_id(userdata, profile_id)) {
     case 0:
@@ -112,6 +198,9 @@ static int set_active_profile(sd_bus *bus, const char *path, const char *interfa
     case 3:
         return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
                                  "permission denied writing platform_profile");
+    case 5:
+        return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_FAILED,
+                                 "failed to read platform_profile");
     default:
         return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_FAILED,
                                  "failed to write platform_profile");
@@ -239,7 +328,7 @@ static int set_action_enabled(sd_bus_message *m, void *userdata, sd_bus_error *r
 
 static const sd_bus_vtable power_profiles_vtable[] = {
     SD_BUS_VTABLE_START(0),
-    SD_BUS_WRITABLE_PROPERTY("ActiveProfile", "s", get_active_profile, set_active_profile, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+    SD_BUS_WRITABLE_PROPERTY("ActiveProfile", "s", get_active_profile, set_active_profile, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE | SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_PROPERTY("PerformanceInhibited", "s", get_empty_string, 0, 0),
     SD_BUS_PROPERTY("PerformanceDegraded", "s", get_empty_string, 0, 0),
     SD_BUS_PROPERTY("Profiles", "aa{sv}", get_profiles, 0, 0),
@@ -247,10 +336,10 @@ static const sd_bus_vtable power_profiles_vtable[] = {
     SD_BUS_PROPERTY("ActionsInfo", "aa{sv}", get_empty_dict_array, 0, 0),
     SD_BUS_PROPERTY("ActiveProfileHolds", "aa{sv}", get_empty_dict_array, 0, 0),
     SD_BUS_PROPERTY("Version", "s", get_version, 0, 0),
-    SD_BUS_WRITABLE_PROPERTY("BatteryAware", "b", get_false, set_battery_aware, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
-    SD_BUS_METHOD("HoldProfile", "sss", "u", hold_profile, 0),
-    SD_BUS_METHOD("ReleaseProfile", "u", "", release_profile, 0),
-    SD_BUS_METHOD("SetActionEnabled", "sb", "", set_action_enabled, 0),
+    SD_BUS_WRITABLE_PROPERTY("BatteryAware", "b", get_false, set_battery_aware, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE | SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("HoldProfile", "sss", "u", hold_profile, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("ReleaseProfile", "u", "", release_profile, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("SetActionEnabled", "sb", "", set_action_enabled, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_VTABLE_END,
 };
 
@@ -292,10 +381,56 @@ int ppd_bus_run(void *state) {
         if (r > 0)
             continue;
 
-        r = sd_bus_wait(bus, UINT64_MAX);
+        int sysfs_fd = ppd_poll_fd(state);
+
+        struct pollfd fds[2];
+        int nfds = 1;
+
+        fds[0].fd = sd_bus_get_fd(bus);
+        fds[0].events = sd_bus_get_events(bus);
+        fds[0].revents = 0;
+
+        if (sysfs_fd >= 0) {
+            fds[1].fd = sysfs_fd;
+            fds[1].events = POLLPRI | POLLERR;
+            fds[1].revents = 0;
+            nfds = 2;
+        }
+
+        uint64_t timeout_usec;
+        r = sd_bus_get_timeout(bus, &timeout_usec);
         if (r < 0) {
-            fprintf(stderr, "failed to wait on bus: %s\n", strerror(-r));
+            fprintf(stderr, "failed to get bus timeout: %s\n", strerror(-r));
             goto finish;
+        }
+
+        int timeout_msec;
+        if (timeout_usec == UINT64_MAX) {
+            timeout_msec = -1;
+        } else {
+            struct timespec ts;
+            if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) {
+                timeout_msec = -1;
+            } else {
+                uint64_t now_usec = (uint64_t)ts.tv_sec * 1000000ULL + ts.tv_nsec / 1000ULL;
+                if (timeout_usec <= now_usec) {
+                    timeout_msec = 0;
+                } else {
+                    timeout_msec = (int)((timeout_usec - now_usec + 999) / 1000);
+                }
+            }
+        }
+
+        r = poll(fds, nfds, timeout_msec);
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            fprintf(stderr, "failed to poll: %s\n", strerror(errno));
+            goto finish;
+        }
+
+        if (sysfs_fd >= 0 && (fds[1].revents & (POLLPRI | POLLERR))) {
+            (void)ppd_check_external_update(state);
         }
     }
 

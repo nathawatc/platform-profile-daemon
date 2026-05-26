@@ -21,10 +21,14 @@ pub fn build(b: *std.Build) void {
     exe.lto = if (optimize == .Debug) .none else .full;
     addSystemdShim(b, exe.root_module);
 
-    b.installArtifact(exe);
+    b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
+        .dest_dir = .{ .override = .lib },
+        .dest_sub_path = "platform-profile-daemon",
+    }).step);
     b.installFile("data/platform-profile-daemon.service", "lib/systemd/system/platform-profile-daemon.service");
     b.installFile("data/org.freedesktop.UPower.PowerProfiles.service", "share/dbus-1/system-services/org.freedesktop.UPower.PowerProfiles.service");
     b.installFile("data/org.freedesktop.UPower.PowerProfiles.conf", "share/dbus-1/system.d/org.freedesktop.UPower.PowerProfiles.conf");
+    b.installFile("data/org.freedesktop.UPower.PowerProfiles.policy", "share/polkit-1/actions/org.freedesktop.UPower.PowerProfiles.policy");
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -41,7 +45,7 @@ pub fn build(b: *std.Build) void {
 }
 
 fn addSystemdShim(b: *std.Build, module: *std.Build.Module) void {
-    module.addCSourceFile(.{ .file = b.path("src/dbus_shim.c"), .flags = &.{"-std=c11", "-Wall", "-Wextra"} });
+    module.addCSourceFile(.{ .file = b.path("src/dbus_shim.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra" } });
     module.linkSystemLibrary("libsystemd", .{ .use_pkg_config = .force });
     module.linkSystemLibrary("c", .{});
 }
