@@ -15,6 +15,6 @@ pkgbase = platform-profile-daemon
 	provides = power-profiles-daemon
 	conflicts = power-profiles-daemon
 	source = platform-profile-daemon-1.0.0.tar.gz::https://codeberg.org/nathawat/platform-profile-daemon/archive/v1.0.0.tar.gz
-	b2sums = SKIP
+	b2sums = 308cba5f8fdd52c02f9d1963b9940f221a8001d2633635bbbad05b069fd335929e2699749210096b6e65d8eebbb471925377d6ecc727ff7cb407a52c278b8d98
 
 pkgname = platform-profile-daemon
