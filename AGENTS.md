@@ -37,6 +37,25 @@ Avoid hidden allocations and avoid extra sysfs I/O in D-Bus hot paths. Keep
 release-oriented build flags in `build.zig` intentional and documented by
 validation.
 
+Keep error paths explicit and preserve strict state semantics:
+
+- runtime sysfs read/parse failure must not fall back to `balanced`;
+- invalid/empty/malformed refresh must keep cached state unchanged;
+- cache may update only after a valid external read or successful sysfs write;
+- read/write helpers must handle `EINTR`, short reads/writes, and fd cleanup;
+- expected warning noise may be suppressed in tests only, not runtime.
+
+For D-Bus changes, preserve desktop/widget compatibility first:
+
+- `ActiveProfile` must stay writable with `SD_BUS_VTABLE_UNPRIVILEGED`;
+- validate object path, interface, property, type, and profile before Polkit or
+  sysfs writes;
+- invalid input must not trigger Polkit and must not emit change signals;
+- keep compatibility stubs unless they are proven unused and outside the PPD
+  compatibility surface;
+- authorization belongs in the handler/Polkit, not by blocking clients at the
+  D-Bus policy layer.
+
 ## Testing Guidelines
 
 Tests use Zig `test` blocks. Add focused tests near the module under test, e.g.
@@ -66,3 +85,16 @@ strict sysfs-only contract.
 
 The daemon must not manage EPP, cpufreq, CPU governors, vendor tuning, or policy
 engines. It may only read and write `/sys/firmware/acpi/platform_profile`.
+
+Do not add shell execution to daemon runtime. Do not make the service root-only
+at the bus-policy layer. Do not block normal clients from sending requests to
+`org.freedesktop.UPower.PowerProfiles`.
+
+When touching service or install behavior, verify:
+
+- systemd hardening still permits only the required sysfs write;
+- the unit does not combine `Conflicts=power-profiles-daemon.service` with
+  `Alias=power-profiles-daemon.service`;
+- installed service, D-Bus, and Polkit files are 0644;
+- no script copies staged `/usr` trees with `cp -a` or changes ownership of
+  system directories.
