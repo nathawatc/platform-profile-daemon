@@ -13,7 +13,7 @@ conflicts=('power-profiles-daemon')
 makedepends=('git' 'pkgconf' 'systemd' 'zig')
 _tag="v${pkgver}"
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/${_tag}.tar.gz")
-b2sums=("SKIP")
+b2sums=("82b5fc895a7e4c8e48c4d1388a30b62a9a6dec68cb43c4086aa3581662090249aeeebed946099210d426c74b2d3b212fab6baa15508e391c545f221815c74a14")
 
 build() {
     cd "${srcdir}/${pkgname}"
