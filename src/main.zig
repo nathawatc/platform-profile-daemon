@@ -47,6 +47,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn parsePlatformProfilePath(args: []const [:0]const u8) ![:0]const u8 {
+    var platform_profile_path: [:0]const u8 = default_platform_profile_path;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -56,14 +57,21 @@ fn parsePlatformProfilePath(args: []const [:0]const u8) ![:0]const u8 {
         }
         if (std.mem.eql(u8, arg, "--platform-profile")) {
             if (i + 1 >= args.len) return error.MissingPlatformProfilePath;
-            return args[i + 1];
+            const path = args[i + 1];
+            if (path.len == 0) return error.MissingPlatformProfilePath;
+            platform_profile_path = path;
+            i += 1;
+            continue;
         }
         if (std.mem.startsWith(u8, arg, "--platform-profile=")) {
-            return arg["--platform-profile=".len.. :0];
+            const path = arg["--platform-profile=".len.. :0];
+            if (path.len == 0) return error.MissingPlatformProfilePath;
+            platform_profile_path = path;
+            continue;
         }
         return error.UnknownArgument;
     }
-    return default_platform_profile_path;
+    return platform_profile_path;
 }
 
 export fn ppd_get_active_profile(ctx: *anyopaque) [*:0]const u8 {
@@ -97,4 +105,22 @@ export fn ppd_check_external_update(ctx: *anyopaque) c_int {
         return 1;
     }
     return 0;
+}
+
+test "platform profile path parser rejects trailing unknown args" {
+    const args = &[_][:0]const u8{ "platform-profile-daemon", "--platform-profile", "/tmp/profile", "--bad" };
+    try std.testing.expectError(error.UnknownArgument, parsePlatformProfilePath(args));
+}
+
+test "platform profile path parser rejects empty path values" {
+    const split_args = &[_][:0]const u8{ "platform-profile-daemon", "--platform-profile", "" };
+    try std.testing.expectError(error.MissingPlatformProfilePath, parsePlatformProfilePath(split_args));
+
+    const equals_args = &[_][:0]const u8{ "platform-profile-daemon", "--platform-profile=" };
+    try std.testing.expectError(error.MissingPlatformProfilePath, parsePlatformProfilePath(equals_args));
+}
+
+test "platform profile path parser accepts explicit path with later valid override" {
+    const args = &[_][:0]const u8{ "platform-profile-daemon", "--platform-profile", "/tmp/first", "--platform-profile=/tmp/second" };
+    try std.testing.expectEqualStrings("/tmp/second", try parsePlatformProfilePath(args));
 }

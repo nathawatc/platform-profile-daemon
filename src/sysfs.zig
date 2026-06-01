@@ -43,14 +43,6 @@ pub const Sysfs = struct {
         return self.fd;
     }
 
-    pub fn checkAndRefresh(self: *Sysfs) ?profile.KernelProfile {
-        const current = self.checkAndRefreshCurrent() orelse return null;
-        return switch (current) {
-            .supported => |kernel_profile| kernel_profile,
-            .custom => null,
-        };
-    }
-
     pub fn checkAndRefreshCurrent(self: *Sysfs) ?CurrentProfile {
         if (self.fd < 0) return null;
         var buf: [64]u8 = undefined;
@@ -203,15 +195,15 @@ test "read, write, watch and refresh platform profile file" {
 
     try sysfs.watch();
     try std.testing.expect(sysfs.pollFd() >= 0);
-    try std.testing.expectEqual(@as(?profile.KernelProfile, .performance), sysfs.checkAndRefresh());
+    try expectSupportedProfile(&sysfs, .performance);
 
     try sysfs.writeProfile(.low_power);
-    try std.testing.expectEqual(@as(?profile.KernelProfile, .low_power), sysfs.checkAndRefresh());
+    try expectSupportedProfile(&sysfs, .low_power);
 }
 
-test "checkAndRefresh returns null for invalid fd and malformed content" {
+test "checkAndRefreshCurrent returns null for invalid fd and malformed content" {
     var sysfs = Sysfs.init("/tmp/does-not-matter");
-    try std.testing.expectEqual(@as(?profile.KernelProfile, null), sysfs.checkAndRefresh());
+    try std.testing.expectEqual(@as(?CurrentProfile, null), sysfs.checkAndRefreshCurrent());
 
     var path_buf: [128]u8 = undefined;
     const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-invalid-{d}", .{std.c.getpid()});
@@ -225,10 +217,10 @@ test "checkAndRefresh returns null for invalid fd and malformed content" {
     var watched = Sysfs.init(path);
     defer watched.deinit();
     try watched.watch();
-    try std.testing.expectEqual(@as(?profile.KernelProfile, null), watched.checkAndRefresh());
+    try std.testing.expectEqual(@as(?CurrentProfile, null), watched.checkAndRefreshCurrent());
 }
 
-test "checkAndRefresh returns null for empty content" {
+test "checkAndRefreshCurrent returns null for empty content" {
     var path_buf: [128]u8 = undefined;
     const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-empty-{d}", .{std.c.getpid()});
     defer _ = std.c.unlink(path.ptr);
@@ -240,7 +232,7 @@ test "checkAndRefresh returns null for empty content" {
     var watched = Sysfs.init(path);
     defer watched.deinit();
     try watched.watch();
-    try std.testing.expectEqual(@as(?profile.KernelProfile, null), watched.checkAndRefresh());
+    try std.testing.expectEqual(@as(?CurrentProfile, null), watched.checkAndRefreshCurrent());
 }
 
 test "old read and refresh APIs stay strict for custom" {
@@ -260,9 +252,14 @@ test "old read and refresh APIs stay strict for custom" {
     try std.testing.expectEqual(@as(std.meta.Tag(CurrentProfile), .custom), std.meta.activeTag(try sysfs.readCurrentProfile()));
 
     try sysfs.watch();
-    try std.testing.expectEqual(@as(?profile.KernelProfile, null), sysfs.checkAndRefresh());
     const current = sysfs.checkAndRefreshCurrent() orelse return error.TestExpectedCustom;
     try std.testing.expectEqual(@as(std.meta.Tag(CurrentProfile), .custom), std.meta.activeTag(current));
+}
+
+fn expectSupportedProfile(sysfs: *Sysfs, expected: profile.KernelProfile) !void {
+    const current = sysfs.checkAndRefreshCurrent() orelse return error.TestExpectedSupportedProfile;
+    try std.testing.expectEqual(@as(std.meta.Tag(CurrentProfile), .supported), std.meta.activeTag(current));
+    try std.testing.expectEqual(expected, current.supported);
 }
 
 test "writeAll retries on EINTR and completes write" {

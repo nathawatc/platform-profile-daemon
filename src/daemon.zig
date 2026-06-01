@@ -131,6 +131,21 @@ fn mapSysfsError(err: sysfs_mod.Error) Error {
     };
 }
 
+fn writeTempProfile(path_buf: []u8, comptime name: []const u8, contents: []const u8) ![:0]const u8 {
+    const path = try std.fmt.bufPrintZ(path_buf, "/tmp/platform-profile-daemon-daemon-test-" ++ name ++ "-{d}", .{std.c.getpid()});
+    try overwriteProfile(path, contents);
+    return path;
+}
+
+fn overwriteProfile(path: [:0]const u8, contents: []const u8) !void {
+    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(fd >= 0);
+    defer _ = std.c.close(fd);
+
+    const written = std.c.write(fd, contents.ptr, contents.len);
+    try std.testing.expectEqual(@as(isize, @intCast(contents.len)), written);
+}
+
 test "unknown dbus profile is rejected" {
     var daemon = Daemon.init("/tmp/does-not-matter");
     try std.testing.expectError(Error.UnknownProfile, daemon.setActiveId(99));
@@ -138,15 +153,8 @@ test "unknown dbus profile is rejected" {
 
 test "setting same profile after refresh skips sysfs write" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-same-{d}", .{std.c.getpid()});
+    const path = try writeTempProfile(&path_buf, "same", "balanced\n");
     defer _ = std.c.unlink(path.ptr);
-
-    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
-    try std.testing.expect(fd >= 0);
-    defer _ = std.c.close(fd);
-
-    const written = std.c.write(fd, "balanced\n", "balanced\n".len);
-    try std.testing.expectEqual(@as(isize, "balanced\n".len), written);
 
     var daemon = Daemon.init(path);
     try daemon.refresh();
@@ -156,15 +164,8 @@ test "setting same profile after refresh skips sysfs write" {
 
 test "stale cached active profile does not skip write" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-stale-{d}", .{std.c.getpid()});
+    const path = try writeTempProfile(&path_buf, "stale", "performance\n");
     defer _ = std.c.unlink(path.ptr);
-
-    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
-    try std.testing.expect(fd >= 0);
-    defer _ = std.c.close(fd);
-
-    const written = std.c.write(fd, "performance\n", "performance\n".len);
-    try std.testing.expectEqual(@as(isize, "performance\n".len), written);
 
     var daemon = Daemon.init(path);
     daemon.active = .balanced;
@@ -177,15 +178,8 @@ test "stale cached active profile does not skip write" {
 
 test "unknown current kernel profile still allows write" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-unknown-{d}", .{std.c.getpid()});
+    const path = try writeTempProfile(&path_buf, "unknown", "quiet\n");
     defer _ = std.c.unlink(path.ptr);
-
-    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
-    try std.testing.expect(fd >= 0);
-    defer _ = std.c.close(fd);
-
-    const written = std.c.write(fd, "quiet\n", "quiet\n".len);
-    try std.testing.expectEqual(@as(isize, "quiet\n".len), written);
 
     var daemon = Daemon.init(path);
     try std.testing.expectEqual(true, try daemon.setActiveId(1));
@@ -197,15 +191,8 @@ test "unknown current kernel profile still allows write" {
 
 test "custom startup profile falls back to balanced" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-custom-{d}", .{std.c.getpid()});
+    const path = try writeTempProfile(&path_buf, "custom", "custom\n");
     defer _ = std.c.unlink(path.ptr);
-
-    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
-    try std.testing.expect(fd >= 0);
-    defer _ = std.c.close(fd);
-
-    const written = std.c.write(fd, "custom\n", "custom\n".len);
-    try std.testing.expectEqual(@as(isize, "custom\n".len), written);
 
     var daemon = Daemon.init(path);
     try daemon.refresh();
@@ -229,14 +216,8 @@ test "custom startup fallback write failure clears cached profile" {
 
 test "custom external refresh falls back to balanced" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-refresh-custom-{d}", .{std.c.getpid()});
+    const path = try writeTempProfile(&path_buf, "refresh-custom", "performance\n");
     defer _ = std.c.unlink(path.ptr);
-
-    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
-    try std.testing.expect(fd >= 0);
-    defer _ = std.c.close(fd);
-    const written = std.c.write(fd, "performance\n", "performance\n".len);
-    try std.testing.expectEqual(@as(isize, "performance\n".len), written);
 
     var daemon = Daemon.init(path);
     defer daemon.deinit();
@@ -244,11 +225,7 @@ test "custom external refresh falls back to balanced" {
     try daemon.sysfs.watch();
     try std.testing.expectEqualStrings("performance", daemon.activeName());
 
-    const write_fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true });
-    try std.testing.expect(write_fd >= 0);
-    defer _ = std.c.close(write_fd);
-    const custom_written = std.c.write(write_fd, "custom\n", "custom\n".len);
-    try std.testing.expectEqual(@as(isize, "custom\n".len), custom_written);
+    try overwriteProfile(path, "custom\n");
 
     try std.testing.expectEqual(true, daemon.checkExternalUpdate());
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
@@ -273,14 +250,8 @@ test "custom external refresh write failure clears cached profile" {
 
 test "custom external refresh from balanced reports no visible change" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-refresh-custom-balanced-{d}", .{std.c.getpid()});
+    const path = try writeTempProfile(&path_buf, "refresh-custom-balanced", "balanced\n");
     defer _ = std.c.unlink(path.ptr);
-
-    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
-    try std.testing.expect(fd >= 0);
-    defer _ = std.c.close(fd);
-    const written = std.c.write(fd, "balanced\n", "balanced\n".len);
-    try std.testing.expectEqual(@as(isize, "balanced\n".len), written);
 
     var daemon = Daemon.init(path);
     defer daemon.deinit();
@@ -288,11 +259,7 @@ test "custom external refresh from balanced reports no visible change" {
     try daemon.sysfs.watch();
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
 
-    const write_fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true });
-    try std.testing.expect(write_fd >= 0);
-    defer _ = std.c.close(write_fd);
-    const custom_written = std.c.write(write_fd, "custom\n", "custom\n".len);
-    try std.testing.expectEqual(@as(isize, "custom\n".len), custom_written);
+    try overwriteProfile(path, "custom\n");
 
     try std.testing.expectEqual(false, daemon.checkExternalUpdate());
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
@@ -303,14 +270,8 @@ test "custom external refresh from balanced reports no visible change" {
 
 test "invalid external refresh keeps cached profile unchanged and reports no change" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-refresh-invalid-{d}", .{std.c.getpid()});
+    const path = try writeTempProfile(&path_buf, "refresh-invalid", "balanced\n");
     defer _ = std.c.unlink(path.ptr);
-
-    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
-    try std.testing.expect(fd >= 0);
-    defer _ = std.c.close(fd);
-    const written = std.c.write(fd, "balanced\n", "balanced\n".len);
-    try std.testing.expectEqual(@as(isize, "balanced\n".len), written);
 
     var daemon = Daemon.init(path);
     defer daemon.deinit();
@@ -318,9 +279,7 @@ test "invalid external refresh keeps cached profile unchanged and reports no cha
     try daemon.sysfs.watch();
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
 
-    const truncate_fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true });
-    try std.testing.expect(truncate_fd >= 0);
-    defer _ = std.c.close(truncate_fd);
+    try overwriteProfile(path, "");
 
     try std.testing.expectEqual(false, daemon.checkExternalUpdate());
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
@@ -344,14 +303,8 @@ fn sealedCustomProfilePath(path_buf: []u8) !struct { fd: std.c.fd_t, path: [:0]c
 
 test "malformed external refresh keeps cached profile unchanged and reports no change" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-daemon-test-refresh-malformed-{d}", .{std.c.getpid()});
+    const path = try writeTempProfile(&path_buf, "refresh-malformed", "balanced\n");
     defer _ = std.c.unlink(path.ptr);
-
-    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
-    try std.testing.expect(fd >= 0);
-    defer _ = std.c.close(fd);
-    const written = std.c.write(fd, "balanced\n", "balanced\n".len);
-    try std.testing.expectEqual(@as(isize, "balanced\n".len), written);
 
     var daemon = Daemon.init(path);
     defer daemon.deinit();
@@ -359,11 +312,7 @@ test "malformed external refresh keeps cached profile unchanged and reports no c
     try daemon.sysfs.watch();
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
 
-    const write_fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true });
-    try std.testing.expect(write_fd >= 0);
-    defer _ = std.c.close(write_fd);
-    const malformed_written = std.c.write(write_fd, "quiet\n", "quiet\n".len);
-    try std.testing.expectEqual(@as(isize, "quiet\n".len), malformed_written);
+    try overwriteProfile(path, "quiet\n");
 
     try std.testing.expectEqual(false, daemon.checkExternalUpdate());
     try std.testing.expectEqualStrings("balanced", daemon.activeName());

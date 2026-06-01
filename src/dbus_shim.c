@@ -305,14 +305,7 @@ static int get_empty_dict_array(sd_bus *bus, const char *path, const char *inter
     return append_empty_aa_sv(reply);
 }
 
-static int hold_profile(sd_bus_message *m, void *userdata, sd_bus_error *reterr_error) {
-    (void)m;
-    (void)userdata;
-    return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_NOT_SUPPORTED,
-                             "profile holds are intentionally not implemented");
-}
-
-static int release_profile(sd_bus_message *m, void *userdata, sd_bus_error *reterr_error) {
+static int unsupported_profile_holds(sd_bus_message *m, void *userdata, sd_bus_error *reterr_error) {
     (void)m;
     (void)userdata;
     return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_NOT_SUPPORTED,
@@ -337,8 +330,8 @@ static const sd_bus_vtable power_profiles_vtable[] = {
     SD_BUS_PROPERTY("ActiveProfileHolds", "aa{sv}", get_empty_dict_array, 0, 0),
     SD_BUS_PROPERTY("Version", "s", get_version, 0, 0),
     SD_BUS_WRITABLE_PROPERTY("BatteryAware", "b", get_false, set_battery_aware, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE | SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("HoldProfile", "sss", "u", hold_profile, SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("ReleaseProfile", "u", "", release_profile, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("HoldProfile", "sss", "u", unsupported_profile_holds, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("ReleaseProfile", "u", "", unsupported_profile_holds, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("SetActionEnabled", "sb", "", set_action_enabled, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_VTABLE_END,
 };
