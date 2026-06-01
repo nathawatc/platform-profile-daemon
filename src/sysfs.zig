@@ -9,6 +9,11 @@ pub const Error = error{
     ReadFailed,
 };
 
+pub const CurrentProfile = union(enum) {
+    supported: profile.KernelProfile,
+    custom,
+};
+
 pub const Sysfs = struct {
     path: [:0]const u8,
     fd: std.c.fd_t = -1,
@@ -39,16 +44,32 @@ pub const Sysfs = struct {
     }
 
     pub fn checkAndRefresh(self: *Sysfs) ?profile.KernelProfile {
+        const current = self.checkAndRefreshCurrent() orelse return null;
+        return switch (current) {
+            .supported => |kernel_profile| kernel_profile,
+            .custom => null,
+        };
+    }
+
+    pub fn checkAndRefreshCurrent(self: *Sysfs) ?CurrentProfile {
         if (self.fd < 0) return null;
         var buf: [64]u8 = undefined;
         if (std.c.lseek(self.fd, 0, 0) < 0) return null;
         const n = readProfileBytes(self.fd, &buf) catch return null;
         const text = std.mem.trim(u8, buf[0..n], " \t\r\n");
         if (text.len == 0) return null;
-        return profile.KernelProfile.parse(text);
+        return parseCurrentProfile(text);
     }
 
     pub fn readCurrent(self: Sysfs) Error!profile.KernelProfile {
+        const current = try self.readCurrentProfile();
+        return switch (current) {
+            .supported => |kernel_profile| kernel_profile,
+            .custom => Error.UnknownKernelProfile,
+        };
+    }
+
+    pub fn readCurrentProfile(self: Sysfs) Error!CurrentProfile {
         const fd = std.c.open(self.path.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
         if (fd < 0) return mapOpenReadError();
         defer _ = std.c.close(fd);
@@ -56,7 +77,7 @@ pub const Sysfs = struct {
         var buf: [64]u8 = undefined;
         const n = try readProfileBytes(fd, &buf);
         const text = std.mem.trim(u8, buf[0..n], " \t\r\n");
-        return profile.KernelProfile.parse(text) orelse Error.UnknownKernelProfile;
+        return parseCurrentProfile(text) orelse Error.UnknownKernelProfile;
     }
 
     pub fn writeProfile(self: Sysfs, value: profile.KernelProfile) Error!void {
@@ -67,6 +88,14 @@ pub const Sysfs = struct {
         try writeAll(fd, value.writeBytes());
     }
 };
+
+fn parseCurrentProfile(text: []const u8) ?CurrentProfile {
+    if (profile.KernelProfile.parse(text)) |kernel_profile| {
+        return .{ .supported = kernel_profile };
+    }
+    if (std.mem.eql(u8, text, "custom")) return .custom;
+    return null;
+}
 
 fn writeAll(fd: std.c.fd_t, bytes: []const u8) Error!void {
     try writeAllWith(fd, bytes, cWrite, cErrno);
@@ -212,6 +241,28 @@ test "checkAndRefresh returns null for empty content" {
     defer watched.deinit();
     try watched.watch();
     try std.testing.expectEqual(@as(?profile.KernelProfile, null), watched.checkAndRefresh());
+}
+
+test "old read and refresh APIs stay strict for custom" {
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-custom-strict-{d}", .{std.c.getpid()});
+    defer _ = std.c.unlink(path.ptr);
+
+    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(fd >= 0);
+    defer _ = std.c.close(fd);
+    try writeAll(fd, "custom\n");
+
+    var sysfs = Sysfs.init(path);
+    defer sysfs.deinit();
+
+    try std.testing.expectError(Error.UnknownKernelProfile, sysfs.readCurrent());
+    try std.testing.expectEqual(@as(std.meta.Tag(CurrentProfile), .custom), std.meta.activeTag(try sysfs.readCurrentProfile()));
+
+    try sysfs.watch();
+    try std.testing.expectEqual(@as(?profile.KernelProfile, null), sysfs.checkAndRefresh());
+    const current = sysfs.checkAndRefreshCurrent() orelse return error.TestExpectedCustom;
+    try std.testing.expectEqual(@as(std.meta.Tag(CurrentProfile), .custom), std.meta.activeTag(current));
 }
 
 test "writeAll retries on EINTR and completes write" {
