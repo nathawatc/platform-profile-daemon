@@ -33,7 +33,7 @@ For local fake-sysfs testing:
 ```sh
 printf 'balanced\n' > /tmp/platform_profile
 zig build -Doptimize=ReleaseFast
-sudo ./zig-out/bin/platform-profile-daemon --platform-profile /tmp/platform_profile
+sudo ./zig-out/lib/platform-profile-daemon --platform-profile /tmp/platform_profile
 ```
 
 Use fake sysfs for development tests. Write the real

@@ -54,7 +54,7 @@ For local fake-sysfs development only:
 ```sh
 printf 'balanced\n' > /tmp/platform_profile
 zig build -Doptimize=ReleaseFast
-sudo ./zig-out/bin/platform-profile-daemon --platform-profile /tmp/platform_profile
+sudo ./zig-out/lib/platform-profile-daemon --platform-profile /tmp/platform_profile
 ```
 
 ### Validate
@@ -148,7 +148,12 @@ busctl --system set-property org.freedesktop.UPower.PowerProfiles \
   org.freedesktop.UPower.PowerProfiles ActiveProfile s balanced
 ```
 
-### Invalid or empty startup profile
+### `custom` profile
+
+When `platform_profile` is `custom`, the daemon intentionally normalizes it by
+writing `balanced`. D-Bus `ActiveProfile` then becomes `balanced`.
+
+### Invalid or empty runtime refresh
 
 The current kernel value must be one of:
 
@@ -158,5 +163,5 @@ balanced
 performance
 ```
 
-Invalid, empty, or malformed runtime refreshes are ignored and do not become
-fake `balanced` changes.
+Invalid, empty, or malformed runtime refreshes are ignored and must not
+fabricate `balanced` changes.
