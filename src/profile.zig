@@ -89,3 +89,8 @@ test "dbus profile name parsing is strict" {
     try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.parseName("balanced "));
     try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.parseName("turbo"));
 }
+
+test "dbus profile IDs reject invalid values" {
+    try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.fromId(-1));
+    try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.fromId(3));
+}

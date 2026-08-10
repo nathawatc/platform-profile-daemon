@@ -83,11 +83,11 @@ export fn ppd_get_active_profile(ctx: *anyopaque) [*:0]const u8 {
 }
 
 export fn ppd_set_active_profile_id(ctx: *anyopaque, profile_id: c_int) c_int {
+    const requested = profile_mod.DbusProfile.fromId(profile_id) orelse return @intFromEnum(CallbackStatus.invalid_profile);
     const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
-    const changed = daemon.setActiveId(profile_id) catch |err| {
+    const changed = daemon.setActiveProfile(requested) catch |err| {
         return @intFromEnum(switch (err) {
             error.UnsupportedPlatform, error.UnknownKernelProfile => CallbackStatus.unsupported,
-            error.UnknownProfile => CallbackStatus.invalid_profile,
             error.PermissionDenied => CallbackStatus.permission_denied,
             error.WriteFailed => CallbackStatus.write_failed,
             error.ReadFailed => CallbackStatus.read_failed,

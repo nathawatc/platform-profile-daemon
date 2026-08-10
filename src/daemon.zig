@@ -5,7 +5,6 @@ const sysfs_mod = @import("sysfs.zig");
 
 pub const Error = error{
     UnsupportedPlatform,
-    UnknownProfile,
     UnknownKernelProfile,
     PermissionDenied,
     WriteFailed,
@@ -51,12 +50,7 @@ pub const Daemon = struct {
         return if (self.active) |active| active.name() else "";
     }
 
-    pub fn setActiveId(self: *Daemon, requested_id: c_int) Error!bool {
-        const requested = profile.DbusProfile.fromId(requested_id) orelse return Error.UnknownProfile;
-        return self.setActiveProfile(requested);
-    }
-
-    fn setActiveProfile(self: *Daemon, requested: profile.DbusProfile) Error!bool {
+    pub fn setActiveProfile(self: *Daemon, requested: profile.DbusProfile) Error!bool {
         const current_kernel_profile: ?profile.KernelProfile = self.sysfs.readCurrent() catch |err| blk: {
             const mapped = mapSysfsError(err);
             if (mapped != Error.UnknownKernelProfile) return mapped;
@@ -146,11 +140,6 @@ fn overwriteProfile(path: [:0]const u8, contents: []const u8) !void {
     try std.testing.expectEqual(@as(isize, @intCast(contents.len)), written);
 }
 
-test "unknown dbus profile is rejected" {
-    var daemon = Daemon.init("/tmp/does-not-matter");
-    try std.testing.expectError(Error.UnknownProfile, daemon.setActiveId(99));
-}
-
 test "watch propagates setup failure" {
     var path_buf: [128]u8 = undefined;
     const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-watch-missing-{d}", .{std.c.getpid()});
@@ -171,7 +160,7 @@ test "setting same profile after refresh skips sysfs write" {
 
     var daemon = Daemon.init(path);
     try daemon.refresh();
-    try std.testing.expectEqual(false, try daemon.setActiveId(1));
+    try std.testing.expectEqual(false, try daemon.setActiveProfile(.balanced));
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
 }
 
@@ -182,7 +171,7 @@ test "stale cached active profile does not skip write" {
 
     var daemon = Daemon.init(path);
     daemon.active = .balanced;
-    try std.testing.expectEqual(true, try daemon.setActiveId(1));
+    try std.testing.expectEqual(true, try daemon.setActiveProfile(.balanced));
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
 
     const sysfs = sysfs_mod.Sysfs.init(path);
@@ -195,7 +184,7 @@ test "unknown current kernel profile still allows write" {
     defer _ = std.c.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
-    try std.testing.expectEqual(true, try daemon.setActiveId(1));
+    try std.testing.expectEqual(true, try daemon.setActiveProfile(.balanced));
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
 
     const sysfs = sysfs_mod.Sysfs.init(path);
