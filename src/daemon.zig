@@ -24,9 +24,9 @@ pub const Daemon = struct {
         self.sysfs.deinit();
     }
 
-    pub fn watch(self: *Daemon) void {
+    pub fn watch(self: *Daemon) Error!void {
         self.sysfs.watch() catch |err| {
-            std.log.warn("failed to watch platform_profile: {}", .{err});
+            return mapSysfsError(err);
         };
     }
 
@@ -149,6 +149,19 @@ fn overwriteProfile(path: [:0]const u8, contents: []const u8) !void {
 test "unknown dbus profile is rejected" {
     var daemon = Daemon.init("/tmp/does-not-matter");
     try std.testing.expectError(Error.UnknownProfile, daemon.setActiveId(99));
+}
+
+test "watch propagates setup failure" {
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-watch-missing-{d}", .{std.c.getpid()});
+    _ = std.c.unlink(path.ptr);
+    defer _ = std.c.unlink(path.ptr);
+
+    var daemon = Daemon.init(path);
+    defer daemon.deinit();
+
+    try std.testing.expectError(Error.UnsupportedPlatform, daemon.watch());
+    try std.testing.expectEqual(@as(std.c.fd_t, -1), daemon.pollFd());
 }
 
 test "setting same profile after refresh skips sysfs write" {

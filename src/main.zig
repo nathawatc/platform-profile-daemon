@@ -40,7 +40,10 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("platform_profile unavailable: {}", .{err});
         return err;
     };
-    daemon.watch();
+    daemon.watch() catch |err| {
+        std.log.err("failed to watch platform_profile: {}", .{err});
+        return err;
+    };
 
     const rc = ppd_bus_run(&daemon);
     if (rc < 0) return error.DBusFailed;

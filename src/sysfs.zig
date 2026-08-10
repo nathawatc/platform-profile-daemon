@@ -34,9 +34,10 @@ pub const Sysfs = struct {
         const fd = std.c.open(self.path.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
         if (fd < 0) return mapOpenReadError();
         self.fd = fd;
+        errdefer self.deinit();
 
         var buf: [64]u8 = undefined;
-        _ = readProfileBytes(self.fd, &buf) catch {};
+        _ = try readProfileBytes(self.fd, &buf);
     }
 
     pub fn pollFd(self: Sysfs) std.c.fd_t {
@@ -199,6 +200,14 @@ test "read, write, watch and refresh platform profile file" {
 
     try sysfs.writeProfile(.low_power);
     try expectSupportedProfile(&sysfs, .low_power);
+}
+
+test "watch closes fd when priming read fails" {
+    var sysfs = Sysfs.init("/");
+    defer sysfs.deinit();
+
+    try std.testing.expectError(Error.ReadFailed, sysfs.watch());
+    try std.testing.expectEqual(@as(std.c.fd_t, -1), sysfs.pollFd());
 }
 
 test "checkAndRefreshCurrent returns null for invalid fd and malformed content" {
