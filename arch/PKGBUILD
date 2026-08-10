@@ -1,0 +1,30 @@
+# Maintainer: nathawat <nathawat[at]noreply[dot]codeberg[dot]org>
+
+pkgname=platform-profile-daemon
+pkgver=1.0.2
+pkgrel=1
+pkgdesc='Minimal Power Profiles D-Bus daemon backed by the kernel ACPI platform profile'
+arch=('x86_64')
+url='https://codeberg.org/nathawat/platform-profile-daemon'
+license=('Apache-2.0')
+depends=('dbus' 'polkit' 'systemd')
+makedepends=('pkgconf' 'zig')
+provides=('power-profiles-daemon')
+conflicts=('power-profiles-daemon')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+b2sums=('REGENERATE_AFTER_FINAL_TAG')
+
+build() {
+    cd "$pkgname"
+    zig build -Doptimize=ReleaseFast
+}
+
+check() {
+    cd "$pkgname"
+    zig build test
+}
+
+package() {
+    cd "$pkgname"
+    DESTDIR="$pkgdir" zig build -Doptimize=ReleaseFast --prefix /usr
+}

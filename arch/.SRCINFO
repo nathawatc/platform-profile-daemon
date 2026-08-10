@@ -1,0 +1,18 @@
+pkgbase = platform-profile-daemon
+	pkgdesc = Minimal Power Profiles D-Bus daemon backed by the kernel ACPI platform profile
+	pkgver = 1.0.2
+	pkgrel = 1
+	url = https://codeberg.org/nathawat/platform-profile-daemon
+	arch = x86_64
+	license = Apache-2.0
+	makedepends = pkgconf
+	makedepends = zig
+	depends = dbus
+	depends = polkit
+	depends = systemd
+	provides = power-profiles-daemon
+	conflicts = power-profiles-daemon
+	source = platform-profile-daemon-1.0.2.tar.gz::https://codeberg.org/nathawat/platform-profile-daemon/archive/v1.0.2.tar.gz
+	b2sums = REGENERATE_AFTER_FINAL_TAG
+
+pkgname = platform-profile-daemon

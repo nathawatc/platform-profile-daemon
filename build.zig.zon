@@ -9,7 +9,7 @@
         "build.zig.zon",
         "src",
         "data",
-        "packaging",
+        "arch",
         "LICENSE",
         "README.md",
     },
