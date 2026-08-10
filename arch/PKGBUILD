@@ -12,7 +12,7 @@ makedepends=('pkgconf' 'zig')
 provides=('power-profiles-daemon')
 conflicts=('power-profiles-daemon')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-b2sums=('REGENERATE_AFTER_FINAL_TAG')
+b2sums=('5e8c50f49ec47fad5c4c5a9b6c20288d98821984d18a5db04dc6972b4ed95b9e39d64961b2e69f80a9508e4ecc4e1cda9ea91a299e90bce0252100e33c17b8c4')
 
 build() {
     cd "$pkgname"
