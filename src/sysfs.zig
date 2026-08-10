@@ -151,8 +151,17 @@ fn mapOpenReadError() Error {
     return switch (std.c.errno(-1)) {
         .NOENT, .NOTDIR => Error.UnsupportedPlatform,
         .ACCES, .PERM => Error.PermissionDenied,
-        else => Error.UnsupportedPlatform,
+        else => Error.ReadFailed,
     };
+}
+
+test "open read fallback errno maps to ReadFailed" {
+    const errno_ptr = std.c._errno();
+    const previous_errno = errno_ptr.*;
+    defer errno_ptr.* = previous_errno;
+
+    errno_ptr.* = @intFromEnum(std.c.E.IO);
+    try std.testing.expectEqual(Error.ReadFailed, mapOpenReadError());
 }
 
 fn mapOpenWriteError() Error {
