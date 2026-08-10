@@ -31,8 +31,7 @@ pub const Sysfs = struct {
 
     pub fn watch(self: *Sysfs) !void {
         if (self.fd >= 0) return;
-        const fd = std.c.open(self.path.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
-        if (fd < 0) return mapOpenReadError();
+        const fd = try openRead(self.path);
         self.fd = fd;
         errdefer self.deinit();
 
@@ -63,8 +62,7 @@ pub const Sysfs = struct {
     }
 
     pub fn readCurrentProfile(self: Sysfs) Error!CurrentProfile {
-        const fd = std.c.open(self.path.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
-        if (fd < 0) return mapOpenReadError();
+        const fd = try openRead(self.path);
         defer _ = std.c.close(fd);
 
         var buf: [64]u8 = undefined;
@@ -74,8 +72,7 @@ pub const Sysfs = struct {
     }
 
     pub fn writeProfile(self: Sysfs, value: profile.KernelProfile) Error!void {
-        const fd = std.c.open(self.path.ptr, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true });
-        if (fd < 0) return mapOpenWriteError();
+        const fd = try openWrite(self.path);
         defer _ = std.c.close(fd);
 
         try writeAll(fd, value.writeBytes());
@@ -88,6 +85,40 @@ fn parseCurrentProfile(text: []const u8) ?CurrentProfile {
     }
     if (std.mem.eql(u8, text, "custom")) return .custom;
     return null;
+}
+
+fn openRead(path: [:0]const u8) Error!std.c.fd_t {
+    return openReadWith(path, cOpenRead, cErrno);
+}
+
+fn openReadWith(
+    path: [:0]const u8,
+    open_fn: *const fn ([*:0]const u8) std.c.fd_t,
+    errno_fn: *const fn () std.c.E,
+) Error!std.c.fd_t {
+    while (true) {
+        const fd = open_fn(path.ptr);
+        if (fd >= 0) return fd;
+        if (errno_fn() == .INTR) continue;
+        return mapOpenReadError();
+    }
+}
+
+fn openWrite(path: [:0]const u8) Error!std.c.fd_t {
+    return openWriteWith(path, cOpenWrite, cErrno);
+}
+
+fn openWriteWith(
+    path: [:0]const u8,
+    open_fn: *const fn ([*:0]const u8) std.c.fd_t,
+    errno_fn: *const fn () std.c.E,
+) Error!std.c.fd_t {
+    while (true) {
+        const fd = open_fn(path.ptr);
+        if (fd >= 0) return fd;
+        if (errno_fn() == .INTR) continue;
+        return mapOpenWriteError();
+    }
 }
 
 fn writeAll(fd: std.c.fd_t, bytes: []const u8) Error!void {
@@ -135,6 +166,14 @@ fn writeAllWith(
     }
 }
 
+fn cOpenRead(path: [*:0]const u8) std.c.fd_t {
+    return std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
+}
+
+fn cOpenWrite(path: [*:0]const u8) std.c.fd_t {
+    return std.c.open(path, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true });
+}
+
 fn cWrite(fd: std.c.fd_t, ptr: [*]const u8, len: usize) isize {
     return std.c.write(fd, ptr, len);
 }
@@ -155,13 +194,30 @@ fn mapOpenReadError() Error {
     };
 }
 
-test "open read fallback errno maps to ReadFailed" {
+test "open errors preserve semantic mappings" {
     const errno_ptr = std.c._errno();
     const previous_errno = errno_ptr.*;
     defer errno_ptr.* = previous_errno;
 
+    errno_ptr.* = @intFromEnum(std.c.E.NOENT);
+    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenReadError());
+    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenWriteError());
+
+    errno_ptr.* = @intFromEnum(std.c.E.NOTDIR);
+    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenReadError());
+    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenWriteError());
+
+    errno_ptr.* = @intFromEnum(std.c.E.ACCES);
+    try std.testing.expectEqual(Error.PermissionDenied, mapOpenReadError());
+    try std.testing.expectEqual(Error.PermissionDenied, mapOpenWriteError());
+
+    errno_ptr.* = @intFromEnum(std.c.E.PERM);
+    try std.testing.expectEqual(Error.PermissionDenied, mapOpenReadError());
+    try std.testing.expectEqual(Error.PermissionDenied, mapOpenWriteError());
+
     errno_ptr.* = @intFromEnum(std.c.E.IO);
     try std.testing.expectEqual(Error.ReadFailed, mapOpenReadError());
+    try std.testing.expectEqual(Error.WriteFailed, mapOpenWriteError());
 }
 
 fn mapOpenWriteError() Error {
@@ -184,6 +240,24 @@ fn mapReadError() Error {
         .ACCES, .PERM => Error.PermissionDenied,
         else => Error.ReadFailed,
     };
+}
+
+test "read and write errors preserve permission and fallback mappings" {
+    const errno_ptr = std.c._errno();
+    const previous_errno = errno_ptr.*;
+    defer errno_ptr.* = previous_errno;
+
+    errno_ptr.* = @intFromEnum(std.c.E.ACCES);
+    try std.testing.expectEqual(Error.PermissionDenied, mapReadError());
+    try std.testing.expectEqual(Error.PermissionDenied, mapWriteError());
+
+    errno_ptr.* = @intFromEnum(std.c.E.PERM);
+    try std.testing.expectEqual(Error.PermissionDenied, mapReadError());
+    try std.testing.expectEqual(Error.PermissionDenied, mapWriteError());
+
+    errno_ptr.* = @intFromEnum(std.c.E.IO);
+    try std.testing.expectEqual(Error.ReadFailed, mapReadError());
+    try std.testing.expectEqual(Error.WriteFailed, mapWriteError());
 }
 
 test "read, write, watch and refresh platform profile file" {
@@ -350,4 +424,79 @@ test "readProfileBytes retries EINTR and handles short reads" {
 
     const n = try readProfileBytesWith(-1, &buf, State.fakeRead, State.fakeErrno);
     try std.testing.expectEqualStrings("performance\n", buf[0..n]);
+}
+
+test "read open retries EINTR and succeeds" {
+    const State = struct {
+        var calls: usize = 0;
+        var last_errno: std.c.E = .SUCCESS;
+
+        fn fakeOpen(path: [*:0]const u8) std.c.fd_t {
+            calls += 1;
+            if (calls == 1) {
+                last_errno = .INTR;
+                return -1;
+            }
+            last_errno = .SUCCESS;
+            return cOpenRead(path);
+        }
+
+        fn fakeErrno() std.c.E {
+            return last_errno;
+        }
+    };
+
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-open-read-eintr-{d}", .{std.c.getpid()});
+    defer _ = std.c.unlink(path.ptr);
+
+    const seed_fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(seed_fd >= 0);
+    defer _ = std.c.close(seed_fd);
+    try writeAll(seed_fd, "balanced\n");
+
+    State.calls = 0;
+    State.last_errno = .SUCCESS;
+    const fd = try openReadWith(path, State.fakeOpen, State.fakeErrno);
+    defer _ = std.c.close(fd);
+
+    try std.testing.expectEqual(@as(usize, 2), State.calls);
+}
+
+test "write open retries EINTR and succeeds" {
+    const State = struct {
+        var calls: usize = 0;
+        var last_errno: std.c.E = .SUCCESS;
+
+        fn fakeOpen(path: [*:0]const u8) std.c.fd_t {
+            calls += 1;
+            if (calls == 1) {
+                last_errno = .INTR;
+                return -1;
+            }
+            last_errno = .SUCCESS;
+            return cOpenWrite(path);
+        }
+
+        fn fakeErrno() std.c.E {
+            return last_errno;
+        }
+    };
+
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-open-write-eintr-{d}", .{std.c.getpid()});
+    defer _ = std.c.unlink(path.ptr);
+
+    const seed_fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(seed_fd >= 0);
+    defer _ = std.c.close(seed_fd);
+    try writeAll(seed_fd, "balanced\n");
+
+    State.calls = 0;
+    State.last_errno = .SUCCESS;
+    const fd = try openWriteWith(path, State.fakeOpen, State.fakeErrno);
+    defer _ = std.c.close(fd);
+
+    try writeAll(fd, "performance\n");
+    try std.testing.expectEqual(@as(usize, 2), State.calls);
 }
