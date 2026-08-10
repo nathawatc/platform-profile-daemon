@@ -252,35 +252,6 @@ static int get_version(sd_bus *bus, const char *path, const char *interface,
     return sd_bus_message_append(reply, "s", VERSION);
 }
 
-static int get_false(sd_bus *bus, const char *path, const char *interface,
-                     const char *property, sd_bus_message *reply,
-                     void *userdata, sd_bus_error *reterr_error) {
-    (void)bus;
-    (void)path;
-    (void)interface;
-    (void)property;
-    (void)userdata;
-    (void)reterr_error;
-    return sd_bus_message_append(reply, "b", 0);
-}
-
-static int set_battery_aware(sd_bus *bus, const char *path, const char *interface,
-                             const char *property, sd_bus_message *value,
-                             void *userdata, sd_bus_error *reterr_error) {
-    (void)bus;
-    (void)path;
-    (void)interface;
-    (void)property;
-    (void)userdata;
-
-    int enabled = 0;
-    int r = sd_bus_message_read(value, "b", &enabled);
-    if (r < 0) return r;
-    if (!enabled) return 1;
-    return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_NOT_SUPPORTED,
-                             "BatteryAware policy is intentionally not implemented");
-}
-
 static int get_actions(sd_bus *bus, const char *path, const char *interface,
                        const char *property, sd_bus_message *reply,
                        void *userdata, sd_bus_error *reterr_error) {
@@ -305,34 +276,15 @@ static int get_empty_dict_array(sd_bus *bus, const char *path, const char *inter
     return append_empty_aa_sv(reply);
 }
 
-static int unsupported_profile_holds(sd_bus_message *m, void *userdata, sd_bus_error *reterr_error) {
-    (void)m;
-    (void)userdata;
-    return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_NOT_SUPPORTED,
-                             "profile holds are intentionally not implemented");
-}
-
-static int set_action_enabled(sd_bus_message *m, void *userdata, sd_bus_error *reterr_error) {
-    (void)m;
-    (void)userdata;
-    return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
-                             "actions are intentionally not implemented");
-}
-
 static const sd_bus_vtable power_profiles_vtable[] = {
     SD_BUS_VTABLE_START(0),
     SD_BUS_WRITABLE_PROPERTY("ActiveProfile", "s", get_active_profile, set_active_profile, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE | SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_PROPERTY("PerformanceInhibited", "s", get_empty_string, 0, 0),
     SD_BUS_PROPERTY("PerformanceDegraded", "s", get_empty_string, 0, 0),
     SD_BUS_PROPERTY("Profiles", "aa{sv}", get_profiles, 0, 0),
     SD_BUS_PROPERTY("Actions", "as", get_actions, 0, 0),
     SD_BUS_PROPERTY("ActionsInfo", "aa{sv}", get_empty_dict_array, 0, 0),
     SD_BUS_PROPERTY("ActiveProfileHolds", "aa{sv}", get_empty_dict_array, 0, 0),
     SD_BUS_PROPERTY("Version", "s", get_version, 0, 0),
-    SD_BUS_WRITABLE_PROPERTY("BatteryAware", "b", get_false, set_battery_aware, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE | SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("HoldProfile", "sss", "u", unsupported_profile_holds, SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("ReleaseProfile", "u", "", unsupported_profile_holds, SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("SetActionEnabled", "sb", "", set_action_enabled, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_VTABLE_END,
 };
 

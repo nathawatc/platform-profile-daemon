@@ -58,6 +58,20 @@ run_ok busctl --system get-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" Acti
 run_ok busctl --system get-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" Profiles
 run_ok busctl --system call "$BUS_NAME" "$OBJECT_PATH" "$PROP_IFACE" GetAll s "$INTERFACE"
 
+INTROSPECTION="$(busctl --system introspect "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE")"
+printf '%s\n' "$INTROSPECTION"
+
+for member in PerformanceInhibited BatteryAware HoldProfile ReleaseProfile SetActionEnabled ProfileReleased; do
+    if grep -Eq "^[[:space:]]*\.${member}[[:space:]]" <<< "$INTROSPECTION"; then
+        die "unsupported D-Bus member is advertised: $member"
+    fi
+done
+
+for member in ActiveProfile Profiles PerformanceDegraded Actions ActionsInfo ActiveProfileHolds Version; do
+    grep -Eq "^[[:space:]]*\.${member}[[:space:]]" <<< "$INTROSPECTION" || \
+        die "missing D-Bus member: $member"
+done
+
 for dbus_profile in power-saver balanced performance; do
     run_ok busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile s "$dbus_profile"
     current="$(extract_active_profile)"

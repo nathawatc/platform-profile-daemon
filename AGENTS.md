@@ -9,13 +9,13 @@ Daemon D-Bus API. It maps profile changes to one sysfs file:
 /sys/firmware/acpi/platform_profile
 ```
 
-* `src/main.zig`: process entrypoint, CLI parsing, C shim exports.
-* `src/daemon.zig`: cached daemon state and profile-change orchestration.
-* `src/profile.zig`: fixed D-Bus/kernel profile mapping.
-* `src/sysfs.zig`: direct sysfs read/write helpers.
-* `src/dbus_shim.c`: `sd-bus` service, properties, methods, and signals.
-* `data/`: systemd unit, D-Bus activation/policy, and Polkit policy files.
-* `packaging/arch/`: Arch packaging metadata.
+- `src/main.zig`: process entrypoint, CLI parsing, C shim exports.
+- `src/daemon.zig`: cached daemon state and profile-change orchestration.
+- `src/profile.zig`: fixed D-Bus/kernel profile mapping.
+- `src/sysfs.zig`: direct sysfs read/write helpers.
+- `src/dbus_shim.c`: `sd-bus` service, properties, methods, and signals.
+- `data/`: systemd unit, D-Bus activation/policy, and Polkit policy files.
+- `packaging/arch/`: Arch packaging metadata.
 
 > [!NOTE]
 > Do not add dynamic profile discovery, read `platform_profile_choices`, or add
@@ -61,11 +61,11 @@ release-oriented build flags in `build.zig` intentional and backed by validation
 
 Preserve strict runtime state semantics:
 
-* runtime sysfs read/parse failure must not fall back to `balanced`
-* invalid, empty, or malformed refresh must keep cached state unchanged
-* cache may update only after a valid external read or successful sysfs write
-* read/write helpers must handle `EINTR`, short reads/writes, and fd cleanup
-* expected warning noise may be suppressed in tests only, not runtime
+- runtime sysfs read/parse failure must not fall back to `balanced`
+- invalid, empty, or malformed refresh must keep cached state unchanged
+- cache may update only after a valid external read or successful sysfs write
+- read/write helpers must handle `EINTR`, short reads/writes, and fd cleanup
+- expected warning noise may be suppressed in tests only, not runtime
 
 ### D-Bus compatibility
 
@@ -90,8 +90,8 @@ profile value
 
 Invalid input must not trigger Polkit and must not emit change signals.
 
-Keep compatibility stubs unless they are proven unused and outside the Power
-Profiles Daemon compatibility surface.
+Do not add compatibility stubs for unsupported members without a demonstrated
+desktop/widget compatibility need.
 
 Authorization belongs in the handler/Polkit, not by blocking clients at the
 D-Bus policy layer.
@@ -113,25 +113,21 @@ org.freedesktop.DBus.Properties.GetAll
 org.freedesktop.DBus.Properties.Set ActiveProfile
 ```
 
-Keep these compatibility properties and methods unless a future compatibility
-audit proves they are safe to remove:
+The D-Bus surface intentionally retains these properties:
 
 ```text
-PerformanceInhibited
+ActiveProfile
 PerformanceDegraded
 Profiles
 Actions
 ActionsInfo
 ActiveProfileHolds
 Version
-BatteryAware
-HoldProfile
-ReleaseProfile
-SetActionEnabled
 ```
 
-Unsupported compatibility stubs should return empty/default state or explicit
-errors instead of implementing additional power-management policy.
+Unsupported operations stay absent from the vtable and introspection, so D-Bus
+naturally returns `UnknownMethod` or `UnknownProperty`. Do not reintroduce stubs
+without a demonstrated compatibility need.
 
 ### Authorization and hardening
 
@@ -236,9 +232,9 @@ org.freedesktop.UPower.PowerProfiles
 
 When touching service or install behavior, verify:
 
-* systemd hardening still permits only the required sysfs write
-* the unit does not combine `Conflicts=power-profiles-daemon.service` with
+- systemd hardening still permits only the required sysfs write
+- the unit does not combine `Conflicts=power-profiles-daemon.service` with
   `Alias=power-profiles-daemon.service`
-* installed service, D-Bus, and Polkit files are 0644
-* no script copies staged `/usr` trees with `cp -a` or changes ownership of
+- installed service, D-Bus, and Polkit files are 0644
+- no script copies staged `/usr` trees with `cp -a` or changes ownership of
   system directories
