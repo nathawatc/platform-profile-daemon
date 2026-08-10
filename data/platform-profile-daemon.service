@@ -22,6 +22,7 @@ MemoryDenyWriteExecute=yes
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+ReadOnlyPaths=/sys
 ReadWritePaths=/sys/firmware/acpi/platform_profile
 
 [Install]
