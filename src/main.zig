@@ -36,12 +36,12 @@ pub fn main(init: std.process.Init) !void {
 
     var daemon = daemon_mod.Daemon.init(platform_profile_path);
     defer daemon.deinit();
-    daemon.refresh() catch |err| {
-        std.log.err("platform_profile unavailable: {}", .{err});
-        return err;
-    };
     daemon.watch() catch |err| {
         std.log.err("failed to watch platform_profile: {}", .{err});
+        return err;
+    };
+    daemon.refresh() catch |err| {
+        std.log.err("platform_profile unavailable: {}", .{err});
         return err;
     };
 
