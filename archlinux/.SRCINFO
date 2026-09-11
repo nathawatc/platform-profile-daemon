@@ -13,6 +13,6 @@ pkgbase = platform-profile-daemon
 	provides = power-profiles-daemon
 	conflicts = power-profiles-daemon
 	source = platform-profile-daemon-1.0.3.tar.gz::https://codeberg.org/nathawat/platform-profile-daemon/archive/v1.0.3.tar.gz
-	b2sums = REGENERATE_AFTER_FINAL_TAG
+	b2sums = 4108bd34d74f6ddc5271ee279f3774feac6d63d0389e98d580350b8a34d798b132b47632cdd139b14c5d02090876611057f0d72489a6770fbf7e9b234193e3f2
 
 pkgname = platform-profile-daemon
