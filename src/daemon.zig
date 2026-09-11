@@ -108,7 +108,6 @@ pub const Daemon = struct {
 
     fn writeFallbackBalanced(self: *Daemon) Error!void {
         self.sysfs.writeProfile(.balanced) catch |err| {
-            self.active = null;
             return mapSysfsError(err);
         };
         self.active = .balanced;
@@ -236,7 +235,7 @@ test "custom external refresh falls back to balanced" {
     try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
 }
 
-test "custom external refresh write failure clears cached profile" {
+test "custom external refresh write failure preserves cached profile" {
     var path_buf: [128]u8 = undefined;
     const sealed = try sealedCustomProfilePath(&path_buf);
     defer _ = std.c.close(sealed.fd);
@@ -247,7 +246,7 @@ test "custom external refresh write failure clears cached profile" {
     try daemon.sysfs.watch();
 
     try std.testing.expectEqual(false, daemon.checkExternalUpdate());
-    try std.testing.expectEqualStrings("", daemon.activeName());
+    try std.testing.expectEqualStrings("performance", daemon.activeName());
 }
 
 test "custom external refresh from balanced reports no visible change" {
