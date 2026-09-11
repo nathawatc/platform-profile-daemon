@@ -99,8 +99,9 @@ fn openReadWith(
     while (true) {
         const fd = open_fn(path.ptr);
         if (fd >= 0) return fd;
-        if (errno_fn() == .INTR) continue;
-        return mapOpenReadError();
+        const err = errno_fn();
+        if (err == .INTR) continue;
+        return mapOpenReadError(err);
     }
 }
 
@@ -116,8 +117,9 @@ fn openWriteWith(
     while (true) {
         const fd = open_fn(path.ptr);
         if (fd >= 0) return fd;
-        if (errno_fn() == .INTR) continue;
-        return mapOpenWriteError();
+        const err = errno_fn();
+        if (err == .INTR) continue;
+        return mapOpenWriteError(err);
     }
 }
 
@@ -139,8 +141,9 @@ fn readProfileBytesWith(
     while (total < buf.len) {
         const rc = read_fn(fd, buf[total..].ptr, buf.len - total);
         if (rc < 0) {
-            if (errno_fn() == .INTR) continue;
-            return mapReadError();
+            const err = errno_fn();
+            if (err == .INTR) continue;
+            return mapReadError(err);
         }
         if (rc == 0) break;
         total += @intCast(rc);
@@ -158,8 +161,9 @@ fn writeAllWith(
     while (written < bytes.len) {
         const rc = write_fn(fd, bytes[written..].ptr, bytes.len - written);
         if (rc < 0) {
-            if (errno_fn() == .INTR) continue;
-            return mapWriteError();
+            const err = errno_fn();
+            if (err == .INTR) continue;
+            return mapWriteError(err);
         }
         if (rc == 0) return Error.WriteFailed;
         written += @intCast(rc);
@@ -186,8 +190,8 @@ fn cErrno() std.c.E {
     return std.c.errno(-1);
 }
 
-fn mapOpenReadError() Error {
-    return switch (std.c.errno(-1)) {
+fn mapOpenReadError(err: std.c.E) Error {
+    return switch (err) {
         .NOENT, .NOTDIR => Error.UnsupportedPlatform,
         .ACCES, .PERM => Error.PermissionDenied,
         else => Error.ReadFailed,
@@ -195,69 +199,86 @@ fn mapOpenReadError() Error {
 }
 
 test "open errors preserve semantic mappings" {
-    const errno_ptr = std.c._errno();
-    const previous_errno = errno_ptr.*;
-    defer errno_ptr.* = previous_errno;
-
-    errno_ptr.* = @intFromEnum(std.c.E.NOENT);
-    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenReadError());
-    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenWriteError());
-
-    errno_ptr.* = @intFromEnum(std.c.E.NOTDIR);
-    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenReadError());
-    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenWriteError());
-
-    errno_ptr.* = @intFromEnum(std.c.E.ACCES);
-    try std.testing.expectEqual(Error.PermissionDenied, mapOpenReadError());
-    try std.testing.expectEqual(Error.PermissionDenied, mapOpenWriteError());
-
-    errno_ptr.* = @intFromEnum(std.c.E.PERM);
-    try std.testing.expectEqual(Error.PermissionDenied, mapOpenReadError());
-    try std.testing.expectEqual(Error.PermissionDenied, mapOpenWriteError());
-
-    errno_ptr.* = @intFromEnum(std.c.E.IO);
-    try std.testing.expectEqual(Error.ReadFailed, mapOpenReadError());
-    try std.testing.expectEqual(Error.WriteFailed, mapOpenWriteError());
+    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenReadError(.NOENT));
+    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenWriteError(.NOENT));
+    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenReadError(.NOTDIR));
+    try std.testing.expectEqual(Error.UnsupportedPlatform, mapOpenWriteError(.NOTDIR));
+    try std.testing.expectEqual(Error.PermissionDenied, mapOpenReadError(.ACCES));
+    try std.testing.expectEqual(Error.PermissionDenied, mapOpenWriteError(.ACCES));
+    try std.testing.expectEqual(Error.PermissionDenied, mapOpenReadError(.PERM));
+    try std.testing.expectEqual(Error.PermissionDenied, mapOpenWriteError(.PERM));
+    try std.testing.expectEqual(Error.ReadFailed, mapOpenReadError(.IO));
+    try std.testing.expectEqual(Error.WriteFailed, mapOpenWriteError(.IO));
 }
 
-fn mapOpenWriteError() Error {
-    return switch (std.c.errno(-1)) {
+fn mapOpenWriteError(err: std.c.E) Error {
+    return switch (err) {
         .NOENT, .NOTDIR => Error.UnsupportedPlatform,
         .ACCES, .PERM => Error.PermissionDenied,
         else => Error.WriteFailed,
     };
 }
 
-fn mapWriteError() Error {
-    return switch (std.c.errno(-1)) {
+fn mapWriteError(err: std.c.E) Error {
+    return switch (err) {
         .ACCES, .PERM => Error.PermissionDenied,
         else => Error.WriteFailed,
     };
 }
 
-fn mapReadError() Error {
-    return switch (std.c.errno(-1)) {
+fn mapReadError(err: std.c.E) Error {
+    return switch (err) {
         .ACCES, .PERM => Error.PermissionDenied,
         else => Error.ReadFailed,
     };
 }
 
 test "read and write errors preserve permission and fallback mappings" {
+    try std.testing.expectEqual(Error.PermissionDenied, mapReadError(.ACCES));
+    try std.testing.expectEqual(Error.PermissionDenied, mapWriteError(.ACCES));
+    try std.testing.expectEqual(Error.PermissionDenied, mapReadError(.PERM));
+    try std.testing.expectEqual(Error.PermissionDenied, mapWriteError(.PERM));
+    try std.testing.expectEqual(Error.ReadFailed, mapReadError(.IO));
+    try std.testing.expectEqual(Error.WriteFailed, mapWriteError(.IO));
+}
+
+test "injected errno drives syscall helper mappings" {
+    const State = struct {
+        fn fakeOpen(path: [*:0]const u8) std.c.fd_t {
+            _ = path;
+            return -1;
+        }
+
+        fn fakeRead(fd: std.c.fd_t, ptr: [*]u8, len: usize) isize {
+            _ = fd;
+            _ = ptr;
+            _ = len;
+            return -1;
+        }
+
+        fn fakeWrite(fd: std.c.fd_t, ptr: [*]const u8, len: usize) isize {
+            _ = fd;
+            _ = ptr;
+            _ = len;
+            return -1;
+        }
+
+        fn fakeErrno() std.c.E {
+            return .ACCES;
+        }
+    };
+
     const errno_ptr = std.c._errno();
     const previous_errno = errno_ptr.*;
     defer errno_ptr.* = previous_errno;
-
-    errno_ptr.* = @intFromEnum(std.c.E.ACCES);
-    try std.testing.expectEqual(Error.PermissionDenied, mapReadError());
-    try std.testing.expectEqual(Error.PermissionDenied, mapWriteError());
-
-    errno_ptr.* = @intFromEnum(std.c.E.PERM);
-    try std.testing.expectEqual(Error.PermissionDenied, mapReadError());
-    try std.testing.expectEqual(Error.PermissionDenied, mapWriteError());
-
     errno_ptr.* = @intFromEnum(std.c.E.IO);
-    try std.testing.expectEqual(Error.ReadFailed, mapReadError());
-    try std.testing.expectEqual(Error.WriteFailed, mapWriteError());
+
+    try std.testing.expectError(Error.PermissionDenied, openReadWith("/tmp/unused", State.fakeOpen, State.fakeErrno));
+    try std.testing.expectError(Error.PermissionDenied, openWriteWith("/tmp/unused", State.fakeOpen, State.fakeErrno));
+
+    var buf: [1]u8 = undefined;
+    try std.testing.expectError(Error.PermissionDenied, readProfileBytesWith(-1, &buf, State.fakeRead, State.fakeErrno));
+    try std.testing.expectError(Error.PermissionDenied, writeAllWith(-1, "x", State.fakeWrite, State.fakeErrno));
 }
 
 test "read, write, watch and refresh platform profile file" {
