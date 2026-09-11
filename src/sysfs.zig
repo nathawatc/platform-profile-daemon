@@ -123,11 +123,11 @@ fn openWriteWith(
     }
 }
 
-fn writeAll(fd: std.c.fd_t, bytes: []const u8) Error!void {
+pub fn writeAll(fd: std.c.fd_t, bytes: []const u8) Error!void {
     try writeAllWith(fd, bytes, cWrite, cErrno);
 }
 
-fn readProfileBytes(fd: std.c.fd_t, buf: []u8) Error!usize {
+pub fn readProfileBytes(fd: std.c.fd_t, buf: []u8) Error!usize {
     return readProfileBytesWith(fd, buf, cRead, cErrno);
 }
 

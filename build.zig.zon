@@ -1,6 +1,6 @@
 .{
     .name = .platform_profile_daemon,
-    .version = "1.0.3",
+    .version = "1.1.0",
     .fingerprint = 0x28986b6768ca3236,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
@@ -9,7 +9,8 @@
         "build.zig.zon",
         "src",
         "data",
-        "arch",
+        "archlinux",
+        "tools",
         "LICENSE",
         "README.md",
     },

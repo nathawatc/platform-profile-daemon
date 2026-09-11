@@ -31,7 +31,6 @@ pub const Daemon = struct {
 
     pub fn refresh(self: *Daemon) Error!void {
         const current = self.sysfs.readCurrentProfile() catch |err| {
-            self.active = null;
             return mapSysfsError(err);
         };
 
@@ -40,8 +39,7 @@ pub const Daemon = struct {
                 self.active = profile.dbusForKernel(kernel_profile);
             },
             .custom => {
-                self.active = null;
-                try self.writeFallbackBalanced();
+                return Error.UnknownKernelProfile;
             },
         }
     }
@@ -90,27 +88,16 @@ pub const Daemon = struct {
                 return false;
             },
             .custom => {
-                const changed = self.active != .balanced;
-                self.writeFallbackBalanced() catch |err| {
-                    if (!builtin.is_test) {
-                        std.log.warn("failed to restore custom platform_profile to balanced: {}", .{err});
-                    }
-                    return false;
-                };
-                return changed;
+                if (!builtin.is_test) {
+                    std.log.warn("ignoring custom platform_profile; keeping cached ActiveProfile", .{});
+                }
+                return false;
             },
         }
     }
 
     pub fn pollFd(self: *Daemon) std.c.fd_t {
         return (&self.sysfs).pollFd();
-    }
-
-    fn writeFallbackBalanced(self: *Daemon) Error!void {
-        self.sysfs.writeProfile(.balanced) catch |err| {
-            return mapSysfsError(err);
-        };
-        self.active = .balanced;
     }
 };
 
@@ -190,20 +177,20 @@ test "unknown current kernel profile still allows write" {
     try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
 }
 
-test "custom startup profile falls back to balanced" {
+test "custom startup profile fails without writing" {
     var path_buf: [128]u8 = undefined;
     const path = try writeTempProfile(&path_buf, "custom", "custom\n");
     defer _ = std.c.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
-    try daemon.refresh();
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
+    try std.testing.expectError(Error.UnknownKernelProfile, daemon.refresh());
+    try std.testing.expectEqualStrings("", daemon.activeName());
 
     const sysfs = sysfs_mod.Sysfs.init(path);
-    try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
+    try std.testing.expectEqual(sysfs_mod.CurrentProfile.custom, try sysfs.readCurrentProfile());
 }
 
-test "custom startup fallback write failure clears cached profile" {
+test "custom refresh failure preserves cached profile" {
     var path_buf: [128]u8 = undefined;
     const sealed = try sealedCustomProfilePath(&path_buf);
     defer _ = std.c.close(sealed.fd);
@@ -211,11 +198,11 @@ test "custom startup fallback write failure clears cached profile" {
     var daemon = Daemon.init(sealed.path);
     daemon.active = .performance;
 
-    try std.testing.expectError(Error.PermissionDenied, daemon.refresh());
-    try std.testing.expectEqualStrings("", daemon.activeName());
+    try std.testing.expectError(Error.UnknownKernelProfile, daemon.refresh());
+    try std.testing.expectEqualStrings("performance", daemon.activeName());
 }
 
-test "custom external refresh falls back to balanced" {
+test "custom external refresh preserves cache and explicit same cached profile converges" {
     var path_buf: [128]u8 = undefined;
     const path = try writeTempProfile(&path_buf, "refresh-custom", "performance\n");
     defer _ = std.c.unlink(path.ptr);
@@ -228,14 +215,16 @@ test "custom external refresh falls back to balanced" {
 
     try overwriteProfile(path, "custom\n");
 
-    try std.testing.expectEqual(true, daemon.checkExternalUpdate());
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
+    try std.testing.expectEqual(false, daemon.checkExternalUpdate());
+    try std.testing.expectEqualStrings("performance", daemon.activeName());
 
     const sysfs = sysfs_mod.Sysfs.init(path);
-    try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
+    try std.testing.expectEqual(sysfs_mod.CurrentProfile.custom, try sysfs.readCurrentProfile());
+    try std.testing.expectEqual(true, try daemon.setActiveProfile(.performance));
+    try std.testing.expectEqual(profile.KernelProfile.performance, try sysfs.readCurrent());
 }
 
-test "custom external refresh write failure preserves cached profile" {
+test "custom external refresh on sealed file preserves cached profile" {
     var path_buf: [128]u8 = undefined;
     const sealed = try sealedCustomProfilePath(&path_buf);
     defer _ = std.c.close(sealed.fd);
@@ -266,7 +255,7 @@ test "custom external refresh from balanced reports no visible change" {
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
 
     const sysfs = sysfs_mod.Sysfs.init(path);
-    try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
+    try std.testing.expectEqual(sysfs_mod.CurrentProfile.custom, try sysfs.readCurrentProfile());
 }
 
 test "invalid external refresh keeps cached profile unchanged and reports no change" {

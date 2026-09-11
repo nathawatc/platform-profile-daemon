@@ -1,13 +1,13 @@
 # Platform Profile Daemon
 
-Minimal Power Profiles Daemon-compatible service backed only by:
+Minimal Power Profiles Daemon-compatible service for Linux 7.3.0-rc1+ Dynamic EPP.
 
 ```text
 /sys/firmware/acpi/platform_profile
 ```
 
 It lets desktop power controls switch the kernel platform profile without adding
-CPU governor, cpufreq, amd_pstate, EPP, TLP, or vendor policy management.
+CPU governor, static EPP, TLP, or vendor policy management.
 
 Fixed mapping:
 
@@ -22,9 +22,26 @@ performance -> performance
 > `platform_profile_choices`; it only supports the fixed mapping above.
 
 > [!NOTE]
-> This project is designed for users who enable the kernel Dynamic EPP function.
-> The daemon writes `platform_profile`; the kernel then reads that platform
-> profile and updates EPP automatically.
+> v1.1.0 initializes Dynamic EPP through a short-lived systemd service before
+> starting the daemon. The `amd_dynamic_epp=enable` kernel command-line option
+> is no longer required or supported. The daemon then bridges desktop power
+> controls and `platform_profile`.
+
+See [AGENTS.md](AGENTS.md) for initialization, privilege boundaries, and
+implementation constraints.
+
+## Install
+
+The Arch package installs both executables, both units, D-Bus policy/activation,
+and Polkit policy. For a staged manual installation:
+
+```sh
+DESTDIR="$PWD/stage" zig build install -Doptimize=ReleaseFast --prefix /usr
+```
+
+Install the staged files individually with appropriate permissions: executables
+0755, units and policy files 0644. Reload systemd after installing. Enable only
+`platform-profile-daemon.service`; its dependency starts the init service.
 
 ## Build
 
@@ -47,14 +64,6 @@ desktop power controls:
 
 ```text
 org.freedesktop.UPower.PowerProfiles
-```
-
-For local fake-sysfs development only:
-
-```sh
-printf 'balanced\n' > /tmp/platform_profile
-zig build -Doptimize=ReleaseFast
-sudo ./zig-out/lib/platform-profile-daemon --platform-profile /tmp/platform_profile
 ```
 
 ### Validate
@@ -114,6 +123,18 @@ stay in sync.
 
 ## Troubleshooting
 
+### Initialization fails
+
+Inspect the initialization service logs:
+
+```sh
+journalctl -u platform-profile-daemon-init.service -b
+```
+
+After resolving a failure, restore a supported global profile if necessary and
+restart the init service, then start the daemon. Avoid changing profiles during
+initialization because the saved initial profile is restored at the end.
+
 ### `Permission denied` when started manually
 
 Run the systemd service instead:
@@ -150,18 +171,7 @@ busctl --system set-property org.freedesktop.UPower.PowerProfiles \
 
 ### `custom` profile
 
-When `platform_profile` is `custom`, the daemon intentionally normalizes it by
-writing `balanced`. D-Bus `ActiveProfile` then becomes `balanced`.
-
-### Invalid or empty runtime refresh
-
-The current kernel value must be one of:
-
-```text
-low-power
-balanced
-performance
-```
-
-Invalid, empty, or malformed runtime refreshes are ignored and must not
-fabricate `balanced` changes.
+An initial `custom` or unsupported profile prevents startup. If `custom` appears
+while running, the desktop keeps showing the last valid profile. Explicitly
+select a supported profile to synchronize the kernel handlers again. The daemon
+does not automatically choose `balanced`.

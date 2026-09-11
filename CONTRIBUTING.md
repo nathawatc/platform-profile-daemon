@@ -25,8 +25,10 @@ balanced    -> balanced
 performance -> performance
 ```
 
-Do not add CPU governor, cpufreq, amd_pstate, EPP, TLP, vendor tuning,
-`platform_profile_choices` discovery, or policy-engine behavior.
+The separate init helper opts canonical CPUFreq policies into Dynamic EPP once
+and reapplies the saved platform profile. Keep that code and its CPUFreq write
+permissions out of the long-running daemon. Do not add CPU governor, static EPP,
+TLP, vendor tuning, `platform_profile_choices` discovery, or policy-engine behavior.
 
 ## Development
 
@@ -48,7 +50,22 @@ Run before submitting changes:
 ```sh
 zig build test
 zig build -Doptimize=ReleaseFast
+zig fmt --check build.zig build.zig.zon src/*.zig
+bash tools/check-install.sh zig-out
+bash tools/init-smoke.sh
 ```
+
+The init smoke test uses unprivileged user/mount namespaces and a temporary
+sysfs tree. An optional isolated D-Bus check also runs the existing smoke suite
+with fake sysfs and a test Polkit responder (requires `python-gobject`):
+
+```sh
+unshare --user --map-root-user python3 tools/dbus-isolated-smoke.py
+```
+
+These checks do not replace target systemd sandbox and real Polkit validation.
+Before publishing an Arch release, replace the development `SKIP` checksum with
+the released archive's BLAKE2 checksum and regenerate `.SRCINFO`.
 
 For D-Bus, service, or authorization changes, also run on a target machine:
 

@@ -143,3 +143,16 @@ test "platform profile path parser accepts explicit path with later valid overri
     const args = &[_][:0]const u8{ "platform-profile-daemon", "--platform-profile", "/tmp/first", "--platform-profile=/tmp/second" };
     try std.testing.expectEqualStrings("/tmp/second", try parsePlatformProfilePath(args));
 }
+
+test "D-Bus setter callback converges custom even when requested profile matches cache" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "profile", .data = "custom\n" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "profile", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    var daemon = daemon_mod.Daemon.init(path);
+    daemon.active = .performance;
+    try std.testing.expectEqual(@as(c_int, 0), ppd_set_active_profile_id(&daemon, 2));
+    try std.testing.expectEqual(profile_mod.KernelProfile.performance, try daemon.sysfs.readCurrent());
+    try std.testing.expectEqualStrings("performance", daemon.activeName());
+}

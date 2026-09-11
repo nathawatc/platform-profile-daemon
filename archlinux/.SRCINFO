@@ -1,6 +1,6 @@
 pkgbase = platform-profile-daemon
 	pkgdesc = Minimal Power Profiles D-Bus daemon backed by the kernel ACPI platform profile
-	pkgver = 1.0.3
+	pkgver = 1.1.0
 	pkgrel = 1
 	url = https://codeberg.org/nathawat/platform-profile-daemon
 	arch = x86_64
@@ -12,7 +12,7 @@ pkgbase = platform-profile-daemon
 	depends = systemd
 	provides = power-profiles-daemon
 	conflicts = power-profiles-daemon
-	source = platform-profile-daemon-1.0.3.tar.gz::https://codeberg.org/nathawat/platform-profile-daemon/archive/v1.0.3.tar.gz
-	b2sums = 4108bd34d74f6ddc5271ee279f3774feac6d63d0389e98d580350b8a34d798b132b47632cdd139b14c5d02090876611057f0d72489a6770fbf7e9b234193e3f2
+	source = platform-profile-daemon-1.1.0.tar.gz::https://codeberg.org/nathawat/platform-profile-daemon/archive/v1.1.0.tar.gz
+	b2sums = SKIP
 
 pkgname = platform-profile-daemon

@@ -10,12 +10,13 @@ Daemon D-Bus API. It maps profile changes to one sysfs file:
 ```
 
 - `src/main.zig`: process entrypoint, CLI parsing, C shim exports.
+- `src/init.zig`: short-lived Dynamic EPP initialization and saved profile reapplication.
 - `src/daemon.zig`: cached daemon state and profile-change orchestration.
 - `src/profile.zig`: fixed D-Bus/kernel profile mapping.
 - `src/sysfs.zig`: direct sysfs read/write helpers.
 - `src/dbus_shim.c`: `sd-bus` service, properties, methods, and signals.
 - `data/`: systemd unit, D-Bus activation/policy, and Polkit policy files.
-- `packaging/arch/`: Arch packaging metadata.
+- `archlinux/`: Arch packaging metadata.
 
 > [!NOTE]
 > Do not add dynamic profile discovery, read `platform_profile_choices`, or add
@@ -38,6 +39,41 @@ sudo ./zig-out/lib/platform-profile-daemon --platform-profile /tmp/platform_prof
 
 Use fake sysfs for development tests. Write the real
 `/sys/firmware/acpi/platform_profile` only when validating on the target machine.
+
+## Startup and privileges
+
+`platform-profile-daemon-init.service` runs a separate short-lived helper before
+the long-running daemon. The daemon unit uses both `Requires=` and `After=` on
+the init service, so initialization failure prevents daemon startup.
+
+The helper reads the initial `platform_profile` and accepts only `low-power`,
+`balanced`, or `performance`. Initial `custom`, unknown, empty, or malformed
+values fail initialization without choosing a replacement.
+
+It writes `dynamic` directly to every canonical
+`/sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference`, then
+reapplies the saved platform profile once. Reapplication synchronizes firmware
+and Dynamic EPP handlers, which may temporarily disagree during initialization.
+Trust the synchronous write result: do not probe available preferences, read EPP
+values, or read the profile back. The target kernel must accept `dynamic` writes;
+do not add support for the obsolete `amd_dynamic_epp=enable` command-line option.
+
+Process policy entries as encountered, without sorting or collecting names.
+Keep `O_NOFOLLOW` path safety and do not use `O_NONBLOCK` for EPP writes. Zero
+matching policies, disappearing or symlinked policies, symlinked EPP attributes,
+and failed writes fail initialization. Preserve useful path and errno context.
+Already initialized policies remain changed; do not add rollback.
+
+The init service may write only the CPUFreq subtree and `platform_profile`
+within sysfs. The daemon retains write access only to `platform_profile`.
+Bootstrap code must not be linked into the daemon. Preserve filesystem and
+syscall hardening in both units.
+
+The oneshot uses `RemainAfterExit=yes`, so daemon restarts do not repeat
+initialization. Do not add EPP polling, CPU hotplug management, periodic
+synchronization, or old-kernel fallback. Policies added afterward are not
+managed. A concurrent firmware/profile change during initialization can be
+overwritten when the saved initial profile is reapplied.
 
 ## Coding style
 
@@ -66,6 +102,11 @@ Preserve strict runtime state semantics:
 - cache may update only after a valid external read or successful sysfs write
 - read/write helpers must handle `EINTR`, short reads/writes, and fd cleanup
 - expected warning noise may be suppressed in tests only, not runtime
+
+Runtime `custom` must log a warning and preserve cached `ActiveProfile` without
+writing. An explicit D-Bus `ActiveProfile` request must still write the requested
+canonical profile when the kernel state is inconsistent, even if it matches the
+cached value, allowing kernel handlers to converge.
 
 ### D-Bus compatibility
 
@@ -216,6 +257,11 @@ CPU governors
 vendor tuning
 policy engines
 ```
+
+The separate v1.1.0 init helper is the sole exception: it writes `dynamic` to
+canonical CPUFreq policy EPP attributes once, then reapplies the saved supported
+platform profile. Keep bootstrap code and CPUFreq permissions out of the daemon.
+Initial `custom` is fatal; runtime `custom` preserves cache without writing.
 
 It may only read and write:
 

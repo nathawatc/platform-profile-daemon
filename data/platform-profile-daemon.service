@@ -1,6 +1,8 @@
 [Unit]
 Description=Minimal Platform Profile Daemon
 Documentation=https://codeberg.org/nathawat/platform-profile-daemon
+Requires=platform-profile-daemon-init.service
+After=platform-profile-daemon-init.service
 
 [Service]
 Type=dbus

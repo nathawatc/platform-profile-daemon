@@ -1,0 +1,29 @@
+[Unit]
+Description=Initialize Dynamic EPP and synchronize platform profile
+Documentation=https://codeberg.org/nathawat/platform-profile-daemon
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/platform-profile-daemon-init
+TimeoutStartSec=30s
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadOnlyPaths=/sys
+ReadWritePaths=/sys/devices/system/cpu/cpufreq /sys/firmware/acpi
