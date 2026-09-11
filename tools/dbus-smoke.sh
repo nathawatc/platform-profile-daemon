@@ -37,6 +37,18 @@ extract_active_profile() {
     busctl --system get-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile | awk '{print $2}' | tr -d '"'
 }
 
+assert_profile_state() {
+    local expected_active="$1"
+    local expected_kernel="$2"
+    local current kernel_value
+
+    current="$(extract_active_profile)"
+    [[ "$current" == "$expected_active" ]] || die "ActiveProfile changed unexpectedly: expected=$expected_active got=$current"
+
+    kernel_value="$(tr -d '\n' < "$PLATFORM_PROFILE_PATH")"
+    [[ "$kernel_value" == "$expected_kernel" ]] || die "sysfs changed unexpectedly: expected=$expected_kernel got=$kernel_value"
+}
+
 restore_original() {
     if [[ -n "${ORIGINAL_PROFILE:-}" ]]; then
         echo "Restoring original profile: $ORIGINAL_PROFILE"
@@ -82,10 +94,18 @@ for dbus_profile in power-saver balanced performance; do
     [[ "$kernel_value" == "$expected_kernel" ]] || die "sysfs mismatch: expected=$expected_kernel got=$kernel_value"
 done
 
+INVALID_BASELINE_ACTIVE="$(extract_active_profile)"
+INVALID_BASELINE_KERNEL="$(tr -d '\n' < "$PLATFORM_PROFILE_PATH")"
+
 run_fail busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile s invalid-profile
+assert_profile_state "$INVALID_BASELINE_ACTIVE" "$INVALID_BASELINE_KERNEL"
 run_fail busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile b true
+assert_profile_state "$INVALID_BASELINE_ACTIVE" "$INVALID_BASELINE_KERNEL"
 run_fail busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" org.freedesktop.UPower.NotPowerProfiles ActiveProfile s balanced
+assert_profile_state "$INVALID_BASELINE_ACTIVE" "$INVALID_BASELINE_KERNEL"
 run_fail busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" NotARealProperty s balanced
+assert_profile_state "$INVALID_BASELINE_ACTIVE" "$INVALID_BASELINE_KERNEL"
 run_fail busctl --system set-property "$BUS_NAME" /org/freedesktop/UPower/NotPowerProfiles "$INTERFACE" ActiveProfile s balanced
+assert_profile_state "$INVALID_BASELINE_ACTIVE" "$INVALID_BASELINE_KERNEL"
 
 echo "D-Bus smoke test passed."
