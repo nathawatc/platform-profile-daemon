@@ -2,6 +2,10 @@ const std = @import("std");
 const daemon_mod = @import("daemon.zig");
 const profile_mod = @import("profile.zig");
 
+pub const std_options: std.Options = .{
+    .signal_stack_size = null,
+};
+
 const default_platform_profile_path = "/sys/firmware/acpi/platform_profile";
 
 extern fn ppd_bus_run(state: *anyopaque) c_int;
