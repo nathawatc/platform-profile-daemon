@@ -8,52 +8,52 @@ PROP_IFACE="org.freedesktop.DBus.Properties"
 PLATFORM_PROFILE_PATH="${PLATFORM_PROFILE_PATH:-/sys/firmware/acpi/platform_profile}"
 
 die() {
-    echo "ERROR: $*" >&2
-    exit 1
+	echo "ERROR: $*" >&2
+	exit 1
 }
 
 run_ok() {
-    echo "+ $*"
-    "$@"
+	echo "+ $*"
+	"$@"
 }
 
 run_fail() {
-    echo "+ (expect fail) $*"
-    if "$@"; then
-        die "command unexpectedly succeeded: $*"
-    fi
+	echo "+ (expect fail) $*"
+	if "$@"; then
+		die "command unexpectedly succeeded: $*"
+	fi
 }
 
 map_to_kernel() {
-    case "$1" in
-        power-saver) echo "low-power" ;;
-        balanced) echo "balanced" ;;
-        performance) echo "performance" ;;
-        *) die "unexpected dbus profile: $1" ;;
-    esac
+	case "$1" in
+		power-saver) echo "low-power" ;;
+		balanced) echo "balanced" ;;
+		performance) echo "performance" ;;
+		*) die "unexpected dbus profile: $1" ;;
+	esac
 }
 
 extract_active_profile() {
-    busctl --system get-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile | awk '{print $2}' | tr -d '"'
+	busctl --system get-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile | awk '{print $2}' | tr -d '"'
 }
 
 assert_profile_state() {
-    local expected_active="$1"
-    local expected_kernel="$2"
-    local current kernel_value
+	local expected_active="$1"
+	local expected_kernel="$2"
+	local current kernel_value
 
-    current="$(extract_active_profile)"
-    [[ "$current" == "$expected_active" ]] || die "ActiveProfile changed unexpectedly: expected=$expected_active got=$current"
+	current="$(extract_active_profile)"
+	[[ "$current" == "$expected_active" ]] || die "ActiveProfile changed unexpectedly: expected=$expected_active got=$current"
 
-    kernel_value="$(tr -d '\n' < "$PLATFORM_PROFILE_PATH")"
-    [[ "$kernel_value" == "$expected_kernel" ]] || die "sysfs changed unexpectedly: expected=$expected_kernel got=$kernel_value"
+	kernel_value="$(tr -d '\n' < "$PLATFORM_PROFILE_PATH")"
+	[[ "$kernel_value" == "$expected_kernel" ]] || die "sysfs changed unexpectedly: expected=$expected_kernel got=$kernel_value"
 }
 
 restore_original() {
-    if [[ -n "${ORIGINAL_PROFILE:-}" ]]; then
-        echo "Restoring original profile: $ORIGINAL_PROFILE"
-        busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile s "$ORIGINAL_PROFILE" || true
-    fi
+	if [[ -n "${ORIGINAL_PROFILE:-}" ]]; then
+		echo "Restoring original profile: $ORIGINAL_PROFILE"
+		busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile s "$ORIGINAL_PROFILE" || true
+	fi
 }
 
 [[ $EUID -eq 0 ]] || die "run as root (busctl --system set-property requires privileges on many systems)"
@@ -74,24 +74,24 @@ INTROSPECTION="$(busctl --system introspect "$BUS_NAME" "$OBJECT_PATH" "$INTERFA
 printf '%s\n' "$INTROSPECTION"
 
 for member in PerformanceInhibited BatteryAware HoldProfile ReleaseProfile SetActionEnabled ProfileReleased; do
-    if grep -Eq "^[[:space:]]*\.${member}[[:space:]]" <<< "$INTROSPECTION"; then
-        die "unsupported D-Bus member is advertised: $member"
-    fi
+	if grep -Eq "^[[:space:]]*\.${member}[[:space:]]" <<< "$INTROSPECTION"; then
+		die "unsupported D-Bus member is advertised: $member"
+	fi
 done
 
 for member in ActiveProfile Profiles PerformanceDegraded Actions ActionsInfo ActiveProfileHolds Version; do
-    grep -Eq "^[[:space:]]*\.${member}[[:space:]]" <<< "$INTROSPECTION" || \
-        die "missing D-Bus member: $member"
+	grep -Eq "^[[:space:]]*\.${member}[[:space:]]" <<< "$INTROSPECTION" || \
+		die "missing D-Bus member: $member"
 done
 
 for dbus_profile in power-saver balanced performance; do
-    run_ok busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile s "$dbus_profile"
-    current="$(extract_active_profile)"
-    [[ "$current" == "$dbus_profile" ]] || die "ActiveProfile mismatch: expected=$dbus_profile got=$current"
+	run_ok busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile s "$dbus_profile"
+	current="$(extract_active_profile)"
+	[[ "$current" == "$dbus_profile" ]] || die "ActiveProfile mismatch: expected=$dbus_profile got=$current"
 
-    expected_kernel="$(map_to_kernel "$dbus_profile")"
-    kernel_value="$(tr -d '\n' < "$PLATFORM_PROFILE_PATH")"
-    [[ "$kernel_value" == "$expected_kernel" ]] || die "sysfs mismatch: expected=$expected_kernel got=$kernel_value"
+	expected_kernel="$(map_to_kernel "$dbus_profile")"
+	kernel_value="$(tr -d '\n' < "$PLATFORM_PROFILE_PATH")"
+	[[ "$kernel_value" == "$expected_kernel" ]] || die "sysfs mismatch: expected=$expected_kernel got=$kernel_value"
 done
 
 INVALID_BASELINE_ACTIVE="$(extract_active_profile)"

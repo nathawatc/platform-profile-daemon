@@ -15,16 +15,16 @@ source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 b2sums=('SKIP')
 
 build() {
-    cd "$pkgname"
-    zig build -Doptimize=ReleaseSmall
+	cd "$pkgname"
+	zig build -Doptimize=ReleaseSmall
 }
 
 check() {
-    cd "$pkgname"
-    zig build test
+	cd "$pkgname"
+	zig build test
 }
 
 package() {
-    cd "$pkgname"
-    DESTDIR="$pkgdir" zig build install -Doptimize=ReleaseSmall --prefix /usr
+	cd "$pkgname"
+	DESTDIR="$pkgdir" zig build install -Doptimize=ReleaseSmall --prefix /usr
 }
