@@ -32,16 +32,34 @@ implementation constraints.
 
 ## Install
 
-The Arch package installs both executables, both units, D-Bus policy/activation,
-and Polkit policy. For a staged manual installation:
+### Arch Linux (AUR)
+
+Install from the AUR:
+
+```sh
+paru -S platform-profile-daemon
+```
+
+The package installs both executables, both systemd units, D-Bus
+policy/activation, and Polkit policy. Enable only the main service; its dependency
+starts the Dynamic EPP init service automatically:
+
+```sh
+sudo systemctl enable --now platform-profile-daemon.service
+```
+
+### Manual installation
+
+For a staged installation:
 
 ```sh
 DESTDIR="$PWD/stage" zig build install -Doptimize=ReleaseFast --prefix /usr
 ```
 
-Install the staged files individually with appropriate permissions: executables
-0755, units and policy files 0644. Reload systemd after installing. Enable only
-`platform-profile-daemon.service`; its dependency starts the init service.
+Install the staged files with the appropriate permissions: executables `0755`,
+and systemd, D-Bus, and Polkit files `0644`. Reload systemd after installation,
+then enable only `platform-profile-daemon.service`; its dependency starts the init
+service automatically.
 
 ## Build
 
