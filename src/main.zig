@@ -30,10 +30,9 @@ export fn ppd_profile_id_from_name(name: [*:0]const u8) c_int {
     };
 }
 
-pub fn main(init: std.process.Init) !void {
-    const allocator = init.arena.allocator();
-    const args = try init.minimal.args.toSlice(allocator);
-    const platform_profile_path = parsePlatformProfilePath(args) catch |err| {
+pub fn main(init: std.process.Init.Minimal) !void {
+    var args = std.process.Args.Iterator.init(init.args);
+    const platform_profile_path = parsePlatformProfilePathIterator(&args) catch |err| {
         std.log.err("{}", .{err});
         return err;
     };
@@ -54,20 +53,33 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn parsePlatformProfilePath(args: []const [:0]const u8) ![:0]const u8 {
+    var iterator = SliceArgIterator{ .args = args };
+    return parsePlatformProfilePathIterator(&iterator);
+}
+
+const SliceArgIterator = struct {
+    args: []const [:0]const u8,
+    index: usize = 0,
+
+    fn next(self: *SliceArgIterator) ?[:0]const u8 {
+        if (self.index >= self.args.len) return null;
+        defer self.index += 1;
+        return self.args[self.index];
+    }
+};
+
+fn parsePlatformProfilePathIterator(args: anytype) ![:0]const u8 {
+    _ = args.next();
     var platform_profile_path: [:0]const u8 = default_platform_profile_path;
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help")) {
             std.debug.print("usage: platform-profile-daemon [--platform-profile PATH]\n", .{});
             std.process.exit(0);
         }
         if (std.mem.eql(u8, arg, "--platform-profile")) {
-            if (i + 1 >= args.len) return error.MissingPlatformProfilePath;
-            const path = args[i + 1];
+            const path = args.next() orelse return error.MissingPlatformProfilePath;
             if (path.len == 0) return error.MissingPlatformProfilePath;
             platform_profile_path = path;
-            i += 1;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--platform-profile=")) {
