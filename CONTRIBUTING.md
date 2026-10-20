@@ -64,8 +64,6 @@ unshare --user --map-root-user python3 tools/dbus-isolated-smoke.py
 ```
 
 These checks do not replace target systemd sandbox and real Polkit validation.
-Before publishing an Arch release, replace the development `SKIP` checksum with
-the released archive's BLAKE2 checksum and regenerate `.SRCINFO`.
 
 For D-Bus, service, or authorization changes, also run on a target machine:
 

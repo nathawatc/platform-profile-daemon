@@ -16,7 +16,6 @@ Daemon D-Bus API. It maps profile changes to one sysfs file:
 - `src/sysfs.zig`: direct sysfs read/write helpers.
 - `src/dbus_shim.c`: `sd-bus` service, properties, methods, and signals.
 - `data/`: systemd unit, D-Bus activation/policy, and Polkit policy files.
-- `archlinux/`: Arch packaging metadata.
 
 > [!NOTE]
 > Do not add dynamic profile discovery, read `platform_profile_choices`, or add

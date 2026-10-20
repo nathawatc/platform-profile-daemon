@@ -9,7 +9,6 @@
         "build.zig.zon",
         "src",
         "data",
-        "archlinux",
         "tools",
         "LICENSE",
         "README.md",
