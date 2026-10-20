@@ -99,10 +99,10 @@ export fn ppd_get_active_profile(ctx: *anyopaque) [*:0]const u8 {
 }
 
 export fn ppd_set_active_profile_id(ctx: *anyopaque, profile_id: c_int) c_int {
-    const requested = profile_mod.DbusProfile.fromId(profile_id) orelse return @intFromEnum(CallbackStatus.invalid_profile);
+    const requested = profile_mod.DbusProfile.fromId(profile_id) orelse return @backingInt(CallbackStatus.invalid_profile);
     const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
     const changed = daemon.setActiveProfile(requested) catch |err| {
-        return @intFromEnum(switch (err) {
+        return @backingInt(switch (err) {
             error.UnsupportedPlatform, error.UnknownKernelProfile => CallbackStatus.unsupported,
             error.PermissionDenied => CallbackStatus.permission_denied,
             error.WriteFailed => CallbackStatus.write_failed,
@@ -110,7 +110,7 @@ export fn ppd_set_active_profile_id(ctx: *anyopaque, profile_id: c_int) c_int {
         });
     };
     if (changed) ppd_emit_active_profile_changed();
-    return @intFromEnum(CallbackStatus.ok);
+    return @backingInt(CallbackStatus.ok);
 }
 export fn ppd_poll_fd(ctx: *anyopaque) c_int {
     const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));

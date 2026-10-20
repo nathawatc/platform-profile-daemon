@@ -3,7 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const strip = b.option(bool, "strip", "Strip debug symbols") orelse (optimize != .Debug);
+    const strip = b.option(bool, "strip", "Strip debug symbols") orelse (optimize != .debug);
 
     const exe = b.addExecutable(.{
         .name = "platform-profile-daemon",
@@ -13,12 +13,12 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .single_threaded = true,
             .strip = strip,
-            .unwind_tables = if (optimize == .Debug) null else .none,
-            .omit_frame_pointer = optimize != .Debug,
-            .error_tracing = optimize == .Debug,
+            .unwind_tables = if (optimize == .debug) null else .none,
+            .omit_frame_pointer = optimize != .debug,
+            .error_tracing = optimize == .debug,
         }),
     });
-    exe.lto = if (optimize == .Debug) .none else .full;
+    exe.lto = if (optimize == .debug) .none else .full;
     addSystemdShim(b, exe.root_module);
 
     b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
@@ -34,13 +34,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .single_threaded = true,
             .strip = strip,
-            .unwind_tables = if (optimize == .Debug) null else .none,
-            .omit_frame_pointer = optimize != .Debug,
-            .error_tracing = optimize == .Debug,
+            .unwind_tables = if (optimize == .debug) null else .none,
+            .omit_frame_pointer = optimize != .debug,
+            .error_tracing = optimize == .debug,
             .link_libc = true,
         }),
     });
-    initializer.lto = if (optimize == .Debug) .none else .full;
+    initializer.lto = if (optimize == .debug) .none else .full;
     b.getInstallStep().dependOn(&b.addInstallArtifact(initializer, .{
         .dest_dir = .{ .override = .lib },
     }).step);

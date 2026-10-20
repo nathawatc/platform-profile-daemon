@@ -112,7 +112,7 @@ fn mapSysfsError(err: sysfs_mod.Error) Error {
 }
 
 fn writeTempProfile(path_buf: []u8, comptime name: []const u8, contents: []const u8) ![:0]const u8 {
-    const path = try std.fmt.bufPrintZ(path_buf, "/tmp/platform-profile-daemon-daemon-test-" ++ name ++ "-{d}", .{std.c.getpid()});
+    const path = try std.mem.printSentinel(path_buf, "/tmp/platform-profile-daemon-daemon-test-" ++ name ++ "-{d}", .{std.c.getpid()}, 0);
     try overwriteProfile(path, contents);
     return path;
 }
@@ -128,7 +128,7 @@ fn overwriteProfile(path: [:0]const u8, contents: []const u8) !void {
 
 test "watch propagates setup failure" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-watch-missing-{d}", .{std.c.getpid()});
+    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-watch-missing-{d}", .{std.c.getpid()}, 0);
     _ = std.c.unlink(path.ptr);
     defer _ = std.c.unlink(path.ptr);
 
@@ -287,7 +287,7 @@ fn sealedCustomProfilePath(path_buf: []u8) !struct { fd: std.c.fd_t, path: [:0]c
     const seals = std.c.F.SEAL_WRITE | std.c.F.SEAL_SHRINK | std.c.F.SEAL_GROW | std.c.F.SEAL_SEAL;
     if (std.c.fcntl(fd, std.c.F.ADD_SEALS, @as(c_int, seals)) < 0) return error.SkipZigTest;
 
-    const path = try std.fmt.bufPrintZ(path_buf, "/proc/self/fd/{d}", .{fd});
+    const path = try std.mem.printSentinel(path_buf, "/proc/self/fd/{d}", .{fd}, 0);
     return .{ .fd = fd, .path = path };
 }
 

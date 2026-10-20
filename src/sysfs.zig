@@ -271,7 +271,7 @@ test "injected errno drives syscall helper mappings" {
     const errno_ptr = std.c._errno();
     const previous_errno = errno_ptr.*;
     defer errno_ptr.* = previous_errno;
-    errno_ptr.* = @intFromEnum(std.c.E.IO);
+    errno_ptr.* = @backingInt(std.c.E.IO);
 
     try std.testing.expectError(Error.PermissionDenied, openReadWith("/tmp/unused", State.fakeOpen, State.fakeErrno));
     try std.testing.expectError(Error.PermissionDenied, openWriteWith("/tmp/unused", State.fakeOpen, State.fakeErrno));
@@ -283,7 +283,7 @@ test "injected errno drives syscall helper mappings" {
 
 test "read, write, watch and refresh platform profile file" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-{d}", .{std.c.getpid()});
+    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-test-{d}", .{std.c.getpid()}, 0);
     defer _ = std.c.unlink(path.ptr);
 
     const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
@@ -319,7 +319,7 @@ test "checkAndRefreshCurrent returns null for invalid fd and malformed content" 
     try std.testing.expectEqual(@as(?CurrentProfile, null), sysfs.checkAndRefreshCurrent());
 
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-invalid-{d}", .{std.c.getpid()});
+    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-test-invalid-{d}", .{std.c.getpid()}, 0);
     defer _ = std.c.unlink(path.ptr);
 
     const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
@@ -335,7 +335,7 @@ test "checkAndRefreshCurrent returns null for invalid fd and malformed content" 
 
 test "checkAndRefreshCurrent returns null for empty content" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-empty-{d}", .{std.c.getpid()});
+    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-test-empty-{d}", .{std.c.getpid()}, 0);
     defer _ = std.c.unlink(path.ptr);
 
     const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
@@ -350,7 +350,7 @@ test "checkAndRefreshCurrent returns null for empty content" {
 
 test "old read and refresh APIs stay strict for custom" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-custom-strict-{d}", .{std.c.getpid()});
+    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-test-custom-strict-{d}", .{std.c.getpid()}, 0);
     defer _ = std.c.unlink(path.ptr);
 
     const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
@@ -396,7 +396,7 @@ test "writeAll retries on EINTR and completes write" {
     };
 
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-eintr-{d}", .{std.c.getpid()});
+    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-test-eintr-{d}", .{std.c.getpid()}, 0);
     defer _ = std.c.unlink(path.ptr);
 
     const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
@@ -468,7 +468,7 @@ test "read open retries EINTR and succeeds" {
     };
 
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-open-read-eintr-{d}", .{std.c.getpid()});
+    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-test-open-read-eintr-{d}", .{std.c.getpid()}, 0);
     defer _ = std.c.unlink(path.ptr);
 
     const seed_fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
@@ -505,7 +505,7 @@ test "write open retries EINTR and succeeds" {
     };
 
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/platform-profile-daemon-test-open-write-eintr-{d}", .{std.c.getpid()});
+    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-test-open-write-eintr-{d}", .{std.c.getpid()}, 0);
     defer _ = std.c.unlink(path.ptr);
 
     const seed_fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
