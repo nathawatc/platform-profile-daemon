@@ -24,7 +24,6 @@ pub fn build(b: *std.Build) void {
 
     b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
         .dest_dir = .{ .override = .lib },
-        .dest_sub_path = "platform-profile-daemon",
     }).step);
     b.installFile("data/platform-profile-daemon.service", "lib/systemd/system/platform-profile-daemon.service");
     const initializer = b.addExecutable(.{
