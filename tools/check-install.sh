@@ -22,7 +22,7 @@ grep -qx 'After=platform-profile-daemon-init.service' "$daemon"
 grep -qx 'Type=oneshot' "$init"
 grep -qx 'RemainAfterExit=yes' "$init"
 [[ $(grep '^ReadWritePaths=' "$daemon") == 'ReadWritePaths=/sys/firmware/acpi/platform_profile' ]]
-[[ $(grep '^ReadWritePaths=' "$init") == 'ReadWritePaths=/sys/devices/system/cpu/cpufreq /sys/firmware/acpi/platform_profile' ]]
+[[ $(grep '^ReadWritePaths=' "$init") == 'ReadWritePaths=/sys/devices/system/cpu/cpufreq /sys/firmware/acpi' ]]
 for unit in "$daemon" "$init"; do
 	for setting in 'NoNewPrivileges=yes' 'CapabilityBoundingSet=' 'AmbientCapabilities=' \
 		'ProtectSystem=strict' 'ReadOnlyPaths=/sys' 'SystemCallFilter=@system-service'; do

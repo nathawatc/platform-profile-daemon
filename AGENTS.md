@@ -65,7 +65,14 @@ and failed writes fail initialization. Preserve useful path and errno context.
 Already initialized policies remain changed; do not add rollback.
 
 The init service may write only the CPUFreq subtree and `platform_profile`
-within sysfs. The daemon retains write access only to `platform_profile`.
+within sysfs (`ReadWritePaths=/sys/devices/system/cpu/cpufreq /sys/firmware/acpi`).
+The parent `/sys/firmware/acpi` directory must be granted read-write in the init
+unit because writing `dynamic` to CPUFreq EPP triggers ACPI firmware re-evaluation
+that can recreate or re-initialize `platform_profile`. A single-file bind mount
+(`.../platform_profile`) binds to the old inode, causing subsequent writes in
+the unit namespace to fail with `EROFS` against the read-only parent sysfs mount.
+Other entries in `/sys/firmware/acpi` remain protected by kernel-enforced read-only
+permissions (`0444`). The daemon retains write access to `platform_profile`.
 Bootstrap code must not be linked into the daemon. Preserve filesystem and
 syscall hardening in both units.
 
@@ -278,7 +285,9 @@ org.freedesktop.UPower.PowerProfiles
 
 When touching service or install behavior, verify:
 
-- systemd hardening still permits only the required sysfs write
+- systemd hardening still permits only the required sysfs writes
+  (`/sys/devices/system/cpu/cpufreq` and `/sys/firmware/acpi` for init,
+  `/sys/firmware/acpi/platform_profile` for daemon)
 - the unit does not combine `Conflicts=power-profiles-daemon.service` with
   `Alias=power-profiles-daemon.service`
 - installed service, D-Bus, and Polkit files are 0644
