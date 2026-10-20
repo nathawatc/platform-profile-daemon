@@ -11,7 +11,6 @@
 #define BUS_NAME "org.freedesktop.UPower.PowerProfiles"
 #define OBJECT_PATH "/org/freedesktop/UPower/PowerProfiles"
 #define INTERFACE "org.freedesktop.UPower.PowerProfiles"
-#define VERSION "1.1.0"
 #define POLKIT_SERVICE "org.freedesktop.PolicyKit1"
 #define POLKIT_PATH "/org/freedesktop/PolicyKit1/Authority"
 #define POLKIT_INTERFACE "org.freedesktop.PolicyKit1.Authority"

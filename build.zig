@@ -1,4 +1,5 @@
 const std = @import("std");
+const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -71,7 +72,10 @@ pub fn build(b: *std.Build) void {
 }
 
 fn addSystemdShim(b: *std.Build, module: *std.Build.Module) void {
-    module.addCSourceFile(.{ .file = b.path("src/dbus_shim.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra" } });
+    module.addCSourceFile(.{
+        .file = b.path("src/dbus_shim.c"),
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-DVERSION=\"" ++ zon.version ++ "\"" },
+    });
     module.linkSystemLibrary("libsystemd", .{ .use_pkg_config = .force });
     module.linkSystemLibrary("c", .{});
 }
