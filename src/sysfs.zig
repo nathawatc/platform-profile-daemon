@@ -46,8 +46,14 @@ pub const Sysfs = struct {
     pub fn checkAndRefreshCurrent(self: *Sysfs) ?CurrentProfile {
         if (self.fd < 0) return null;
         var buf: [64]u8 = undefined;
-        if (std.c.lseek(self.fd, 0, 0) < 0) return null;
-        const n = readProfileBytes(self.fd, &buf) catch return null;
+        if (std.c.lseek(self.fd, 0, 0) < 0) {
+            self.deinit();
+            return null;
+        }
+        const n = readProfileBytes(self.fd, &buf) catch {
+            self.deinit();
+            return null;
+        };
         const text = std.mem.trim(u8, buf[0..n], " \t\r\n");
         if (text.len == 0) return null;
         return parseCurrentProfile(text);
@@ -346,6 +352,18 @@ test "checkAndRefreshCurrent returns null for empty content" {
     defer watched.deinit();
     try watched.watch();
     try std.testing.expectEqual(@as(?CurrentProfile, null), watched.checkAndRefreshCurrent());
+}
+
+test "checkAndRefreshCurrent closes fd on seek error" {
+    var pipe_fds: [2]std.c.fd_t = undefined;
+    try std.testing.expect(std.c.pipe2(&pipe_fds, .{ .CLOEXEC = true }) == 0);
+    defer _ = std.c.close(pipe_fds[1]);
+
+    var sysfs = Sysfs{ .path = "/tmp/unused", .fd = pipe_fds[0] };
+    defer sysfs.deinit();
+
+    try std.testing.expectEqual(@as(?CurrentProfile, null), sysfs.checkAndRefreshCurrent());
+    try std.testing.expectEqual(@as(std.c.fd_t, -1), sysfs.pollFd());
 }
 
 test "old read and refresh APIs stay strict for custom" {

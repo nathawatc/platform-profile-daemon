@@ -373,7 +373,7 @@ int ppd_bus_run(void *state) {
             goto finish;
         }
 
-        if (sysfs_fd >= 0 && (fds[1].revents & (POLLPRI | POLLERR))) {
+        if (sysfs_fd >= 0 && (fds[1].revents & (POLLPRI | POLLERR | POLLHUP | POLLNVAL))) {
             (void)ppd_check_external_update(state);
         }
     }
