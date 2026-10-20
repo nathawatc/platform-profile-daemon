@@ -72,7 +72,7 @@ pub const Daemon = struct {
     }
 
     pub fn checkExternalUpdate(self: *Daemon) bool {
-        const current = (&self.sysfs).checkAndRefreshCurrent() orelse {
+        const current = self.sysfs.checkAndRefreshCurrent() orelse {
             if (!builtin.is_test) {
                 std.log.warn("ignoring invalid platform_profile refresh event", .{});
             }
@@ -97,7 +97,7 @@ pub const Daemon = struct {
     }
 
     pub fn pollFd(self: *Daemon) std.c.fd_t {
-        return (&self.sysfs).pollFd();
+        return self.sysfs.pollFd();
     }
 };
 
