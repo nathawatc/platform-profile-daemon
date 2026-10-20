@@ -3,11 +3,6 @@ const builtin = @import("builtin");
 const profile = @import("profile.zig");
 const sysfs = @import("sysfs.zig");
 
-const IN_ACCESS = 0x00000001;
-const IN_CLOSE_WRITE = 0x00000008;
-const IN_NONBLOCK = 0o0004000;
-const IN_CLOEXEC = 0o2000000;
-
 pub const std_options: std.Options = .{ .signal_stack_size = null };
 
 pub fn main() void {
@@ -245,13 +240,13 @@ test "initialization I/O reads profile once then writes policies before profile 
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "profile", .data = "low-power\n" });
     try seedPolicy(tmp.dir, "policy0");
     try seedPolicy(tmp.dir, "policy1");
-    const fd = std.c.inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    const fd = std.c.inotify_init1(std.os.linux.IN.NONBLOCK | std.os.linux.IN.CLOEXEC);
     try std.testing.expect(fd >= 0);
     defer _ = std.c.close(fd);
     var pathBuf: [std.fs.max_path_bytes]u8 = undefined;
     var watches: [3]c_int = undefined;
     for ([_][]const u8{ "profile", "policy0/energy_performance_preference", "policy1/energy_performance_preference" }, 0..) |path, i| {
-        watches[i] = std.c.inotify_add_watch(fd, try testPath(tmp.dir, path, &pathBuf), IN_ACCESS | IN_CLOSE_WRITE);
+        watches[i] = std.c.inotify_add_watch(fd, try testPath(tmp.dir, path, &pathBuf), std.os.linux.IN.ACCESS | std.os.linux.IN.CLOSE_WRITE);
         try std.testing.expect(watches[i] >= 0);
     }
     var profileBuf: [std.fs.max_path_bytes]u8 = undefined;
@@ -266,12 +261,12 @@ test "initialization I/O reads profile once then writes policies before profile 
     var written: [3]bool = @splat(false);
     while (offset < @as(usize, @intCast(n))) {
         const event: *const std.os.linux.inotify_event = @ptrCast(@alignCast(&events[offset]));
-        if (event.mask & IN_ACCESS != 0) {
+        if (event.mask & std.os.linux.IN.ACCESS != 0) {
             try std.testing.expectEqual(watches[0], event.wd);
             try std.testing.expectEqual(@as(usize, 0), writes);
             reads += 1;
         }
-        if (event.mask & IN_CLOSE_WRITE != 0) {
+        if (event.mask & std.os.linux.IN.CLOSE_WRITE != 0) {
             const index = std.mem.indexOfScalar(c_int, &watches, event.wd) orelse return error.UnexpectedWatch;
             try std.testing.expect(!written[index]);
             if (index == 0) try std.testing.expectEqual(@as(usize, 2), writes);
