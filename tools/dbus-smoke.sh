@@ -43,23 +43,23 @@ assert_profile_state() {
 	local current kernel_value
 
 	current="$(extract_active_profile)"
-	[[ "$current" == "$expected_active" ]] || die "ActiveProfile changed unexpectedly: expected=$expected_active got=$current"
+	[[ $current == "$expected_active" ]] || die "ActiveProfile changed unexpectedly: expected=$expected_active got=$current"
 
 	kernel_value="$(tr -d '\n' < "$PLATFORM_PROFILE_PATH")"
-	[[ "$kernel_value" == "$expected_kernel" ]] || die "sysfs changed unexpectedly: expected=$expected_kernel got=$kernel_value"
+	[[ $kernel_value == "$expected_kernel" ]] || die "sysfs changed unexpectedly: expected=$expected_kernel got=$kernel_value"
 }
 
 restore_original() {
-	if [[ -n "${ORIGINAL_PROFILE:-}" ]]; then
+	if [[ -n ${ORIGINAL_PROFILE:-} ]]; then
 		echo "Restoring original profile: $ORIGINAL_PROFILE"
 		busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile s "$ORIGINAL_PROFILE" || true
 	fi
 }
 
 [[ $EUID -eq 0 ]] || die "run as root (busctl --system set-property requires privileges on many systems)"
-command -v busctl >/dev/null 2>&1 || die "missing busctl"
-[[ -e "$PLATFORM_PROFILE_PATH" ]] || die "sysfs path not found: $PLATFORM_PROFILE_PATH"
-[[ -w "$PLATFORM_PROFILE_PATH" ]] || die "sysfs path is not writable: $PLATFORM_PROFILE_PATH"
+command -v busctl > /dev/null 2>&1 || die "missing busctl"
+[[ -e $PLATFORM_PROFILE_PATH ]] || die "sysfs path not found: $PLATFORM_PROFILE_PATH"
+[[ -w $PLATFORM_PROFILE_PATH ]] || die "sysfs path is not writable: $PLATFORM_PROFILE_PATH"
 
 trap restore_original EXIT
 
@@ -80,18 +80,18 @@ for member in PerformanceInhibited BatteryAware HoldProfile ReleaseProfile SetAc
 done
 
 for member in ActiveProfile Profiles PerformanceDegraded Actions ActionsInfo ActiveProfileHolds Version; do
-	grep -Eq "^[[:space:]]*\.${member}[[:space:]]" <<< "$INTROSPECTION" || \
-		die "missing D-Bus member: $member"
+	grep -Eq "^[[:space:]]*\.${member}[[:space:]]" <<< "$INTROSPECTION" \
+		|| die "missing D-Bus member: $member"
 done
 
 for dbus_profile in power-saver balanced performance; do
 	run_ok busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" ActiveProfile s "$dbus_profile"
 	current="$(extract_active_profile)"
-	[[ "$current" == "$dbus_profile" ]] || die "ActiveProfile mismatch: expected=$dbus_profile got=$current"
+	[[ $current == "$dbus_profile" ]] || die "ActiveProfile mismatch: expected=$dbus_profile got=$current"
 
 	expected_kernel="$(map_to_kernel "$dbus_profile")"
 	kernel_value="$(tr -d '\n' < "$PLATFORM_PROFILE_PATH")"
-	[[ "$kernel_value" == "$expected_kernel" ]] || die "sysfs mismatch: expected=$expected_kernel got=$kernel_value"
+	[[ $kernel_value == "$expected_kernel" ]] || die "sysfs mismatch: expected=$expected_kernel got=$kernel_value"
 done
 
 INVALID_BASELINE_ACTIVE="$(extract_active_profile)"
