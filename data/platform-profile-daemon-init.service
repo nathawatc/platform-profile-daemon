@@ -1,6 +1,6 @@
 [Unit]
 Description=Initialize Dynamic EPP and synchronize platform profile
-Documentation=https://codeberg.org/nathawat/platform-profile-daemon
+Documentation=https://github.com/nathawatc/platform-profile-daemon
 
 [Service]
 Type=oneshot
