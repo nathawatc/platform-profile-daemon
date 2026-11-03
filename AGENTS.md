@@ -9,12 +9,12 @@ Daemon D-Bus API. It maps profile changes to one sysfs file:
 /sys/firmware/acpi/platform_profile
 ```
 
-- `src/main.zig`: process entrypoint, CLI parsing, C shim exports.
+- `src/main.zig`: process entrypoint and CLI parsing.
 - `src/init.zig`: short-lived Dynamic EPP initialization and saved profile reapplication.
 - `src/daemon.zig`: cached daemon state and profile-change orchestration.
 - `src/profile.zig`: fixed D-Bus/kernel profile mapping.
 - `src/sysfs.zig`: direct sysfs read/write helpers.
-- `src/dbus_shim.c`: `sd-bus` service, properties, methods, and signals.
+- `src/dbus.zig`: native D-Bus wire protocol, service, properties, signals, Polkit.
 - `data/`: systemd unit, D-Bus activation/policy, and Polkit policy files.
 
 > [!NOTE]

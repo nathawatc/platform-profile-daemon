@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.lto = if (optimize == .debug) .none else .full;
-    addSystemdShim(b, exe.root_module);
+    configureDaemon(b, exe.root_module);
 
     b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
         .dest_dir = .{ .override = .lib },
@@ -56,7 +56,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    addSystemdShim(b, tests.root_module);
+    configureDaemon(b, tests.root_module);
 
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run tests");
@@ -70,11 +70,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(init_tests).step);
 }
 
-fn addSystemdShim(b: *std.Build, module: *std.Build.Module) void {
-    module.addCSourceFile(.{
-        .file = b.path("src/dbus_shim.c"),
-        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-DVERSION=\"" ++ zon.version ++ "\"" },
-    });
-    module.linkSystemLibrary("libsystemd", .{ .use_pkg_config = .force });
-    module.linkSystemLibrary("c", .{});
+fn configureDaemon(b: *std.Build, module: *std.Build.Module) void {
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", zon.version);
+    module.addOptions("build_options", options);
+    module.link_libc = true;
 }

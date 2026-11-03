@@ -1,34 +1,12 @@
 const std = @import("std");
 const daemon_mod = @import("daemon.zig");
-const profile_mod = @import("profile.zig");
+const dbus = @import("dbus.zig");
 
 pub const std_options: std.Options = .{
     .signal_stack_size = null,
 };
 
 const default_platform_profile_path = "/sys/firmware/acpi/platform_profile";
-
-extern fn ppd_bus_run(state: *anyopaque) c_int;
-extern fn ppd_emit_active_profile_changed() void;
-
-const CallbackStatus = enum(c_int) {
-    ok = 0,
-    unsupported = 1,
-    invalid_profile = 2,
-    permission_denied = 3,
-    write_failed = 4,
-    read_failed = 5,
-};
-
-export fn ppd_profile_id_from_name(name: [*:0]const u8) c_int {
-    const text = std.mem.sliceTo(name, 0);
-    const dbus_profile = profile_mod.DbusProfile.parseName(text) orelse return -1;
-    return switch (dbus_profile) {
-        .power_saver => 0,
-        .balanced => 1,
-        .performance => 2,
-    };
-}
 
 pub fn main(init: std.process.Init.Minimal) !void {
     var args = std.process.Args.Iterator.init(init.args);
@@ -48,8 +26,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
         return err;
     };
 
-    const rc = ppd_bus_run(&daemon);
-    if (rc < 0) return error.DBusFailed;
+    dbus.run(&daemon) catch |err| {
+        std.log.err("D-Bus service failed: {}", .{err});
+        return err;
+    };
 }
 
 fn parsePlatformProfilePath(args: []const [:0]const u8) ![:0]const u8 {
@@ -93,39 +73,6 @@ fn parsePlatformProfilePathIterator(args: anytype) ![:0]const u8 {
     return platform_profile_path;
 }
 
-export fn ppd_get_active_profile(ctx: *anyopaque) [*:0]const u8 {
-    const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
-    return daemon.activeName().ptr;
-}
-
-export fn ppd_set_active_profile_id(ctx: *anyopaque, profile_id: c_int) c_int {
-    const requested = profile_mod.DbusProfile.fromId(profile_id) orelse return @backingInt(CallbackStatus.invalid_profile);
-    const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
-    const changed = daemon.setActiveProfile(requested) catch |err| {
-        return @backingInt(switch (err) {
-            error.UnsupportedPlatform, error.UnknownKernelProfile => CallbackStatus.unsupported,
-            error.PermissionDenied => CallbackStatus.permission_denied,
-            error.WriteFailed => CallbackStatus.write_failed,
-            error.ReadFailed => CallbackStatus.read_failed,
-        });
-    };
-    if (changed) ppd_emit_active_profile_changed();
-    return @backingInt(CallbackStatus.ok);
-}
-export fn ppd_poll_fd(ctx: *anyopaque) c_int {
-    const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
-    return daemon.pollFd();
-}
-
-export fn ppd_check_external_update(ctx: *anyopaque) c_int {
-    const daemon: *daemon_mod.Daemon = @ptrCast(@alignCast(ctx));
-    if (daemon.checkExternalUpdate()) {
-        ppd_emit_active_profile_changed();
-        return 1;
-    }
-    return 0;
-}
-
 test "platform profile path parser rejects trailing unknown args" {
     const args = &[_][:0]const u8{ "platform-profile-daemon", "--platform-profile", "/tmp/profile", "--bad" };
     try std.testing.expectError(error.UnknownArgument, parsePlatformProfilePath(args));
@@ -144,15 +91,9 @@ test "platform profile path parser accepts explicit path with later valid overri
     try std.testing.expectEqualStrings("/tmp/second", try parsePlatformProfilePath(args));
 }
 
-test "D-Bus setter callback converges custom even when requested profile matches cache" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "profile", .data = "custom\n" });
-    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "profile", std.testing.allocator);
-    defer std.testing.allocator.free(path);
-    var daemon = daemon_mod.Daemon.init(path);
-    daemon.active = .performance;
-    try std.testing.expectEqual(@as(c_int, 0), ppd_set_active_profile_id(&daemon, 2));
-    try std.testing.expectEqual(profile_mod.KernelProfile.performance, try daemon.sysfs.readCurrent());
-    try std.testing.expectEqualStrings("performance", daemon.activeName());
+test {
+    _ = @import("daemon.zig");
+    _ = @import("dbus.zig");
+    _ = @import("profile.zig");
+    _ = @import("sysfs.zig");
 }

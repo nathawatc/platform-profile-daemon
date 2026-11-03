@@ -5,15 +5,6 @@ pub const DbusProfile = enum {
     balanced,
     performance,
 
-    pub fn fromId(id: c_int) ?DbusProfile {
-        return switch (id) {
-            0 => .power_saver,
-            1 => .balanced,
-            2 => .performance,
-            else => null,
-        };
-    }
-
     pub fn name(self: DbusProfile) [:0]const u8 {
         return switch (self) {
             .power_saver => "power-saver",
@@ -88,9 +79,4 @@ test "dbus profile name parsing is strict" {
     try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.parseName(""));
     try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.parseName("balanced "));
     try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.parseName("turbo"));
-}
-
-test "dbus profile IDs reject invalid values" {
-    try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.fromId(-1));
-    try std.testing.expectEqual(@as(?DbusProfile, null), DbusProfile.fromId(3));
 }
