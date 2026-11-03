@@ -14,6 +14,8 @@ Daemon D-Bus API. It maps profile changes to one sysfs file:
 - `src/daemon.zig`: cached daemon state and profile-change orchestration.
 - `src/profile.zig`: fixed D-Bus/kernel profile mapping.
 - `src/sysfs.zig`: direct sysfs read/write helpers.
+- `src/rt.zig`: libc-free runtime shared by both executables (panic and log handlers).
+- `src/testutil.zig`: test-only raw-syscall helpers; never imported by runtime code.
 - `src/dbus.zig`: native D-Bus wire protocol, service, properties, signals, Polkit.
 - `data/`: systemd unit, D-Bus activation/policy, and Polkit policy files.
 
@@ -38,6 +40,26 @@ sudo ./zig-out/lib/platform-profile-daemon --platform-profile /tmp/platform_prof
 
 Use fake sysfs for development tests. Write the real
 `/sys/firmware/acpi/platform_profile` only when validating on the target machine.
+
+## Runtime: no libc
+
+Both executables are static, non-PIE and libc-free. They issue raw Linux
+syscalls through `std.os.linux` and decode failures with `linux.errno()`; there
+is no global `errno`, so helpers that need it for logging take an `errno_out`
+pointer (see `sysfs.writeAllReport`). Do not add `link_libc`, `std.c`, `extern
+"c"`, `std.debug.print`, or `std.process.exit` to runtime code.
+
+Each root file declares `std_options = rt.std_options` and
+`panic = std.debug.FullPanic(rt.panicFn)`. `rt.zig` writes panics and log lines
+straight to stderr (log lines carry an sd-daemon `<N>` priority prefix) and
+traps, so std's stack-trace, debug-info and `Io.Threaded` machinery is never
+linked. `main` returns a `u8` exit status instead of an error union so
+`std.start` never prints an error trace. Keep stack tracing, the segfault
+handler and the sigaltstack disabled.
+
+The D-Bus bus address comes from `std.process.Init.Minimal.environ`, not
+`getenv`. Release builds use `pie = false` and section GC; check the result
+with `file`, `ldd` and `readelf -d` (no `NEEDED`, no `INTERP`).
 
 ## Startup and privileges
 
