@@ -1,64 +1,70 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const profile = @import("profile.zig");
+const rt = @import("rt.zig");
 const sysfs = @import("sysfs.zig");
+const testutil = @import("testutil.zig");
 
-pub const std_options: std.Options = .{ .signal_stack_size = null };
+const linux = std.os.linux;
+
+pub const std_options = rt.std_options;
+pub const panic = std.debug.FullPanic(rt.panicFn);
 
 pub fn main() void {
     initialize("/sys/firmware/acpi/platform_profile", "/sys/devices/system/cpu/cpufreq") catch {
-        std.process.exit(1);
+        rt.exit(1);
     };
 }
 
 fn initialize(profilePath: [:0]const u8, cpuPath: [:0]const u8) !void {
     const saved = try readInitial(profilePath);
-    const root = try openAt(std.c.AT.FDCWD, cpuPath, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, cpuPath);
-    const directory = std.c.fdopendir(root) orelse {
-        const err = failure(cpuPath, error.EnumerateFailed, std.c.errno(-1));
-        _ = std.c.close(root);
-        return err;
-    };
-    defer _ = std.c.closedir(directory);
+    const root = try openAt(linux.AT.FDCWD, cpuPath, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, cpuPath);
+    defer _ = linux.close(root);
 
     // Process borrowed names immediately, opening relative to the pinned root.
     // A disappearing or symlinked policy remains an error.
     var foundPolicy = false;
+    var dents: [4096]u8 align(@alignOf(linux.dirent64)) = undefined;
     while (true) {
-        std.c._errno().* = 0;
-        const entry = std.c.readdir(directory) orelse {
-            const errno = std.c.errno(-1);
-            if (errno == .INTR) continue;
-            if (errno != .SUCCESS) return failure(cpuPath, error.EnumerateFailed, errno);
-            break;
-        };
-        const name = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(&entry.name)), 0);
-        if (!isPolicyName(name)) continue;
-        foundPolicy = true;
-        var pathBuf: [std.fs.max_path_bytes]u8 = undefined;
-        const path = std.mem.printSentinel(&pathBuf, "{s}/{s}/energy_performance_preference", .{ cpuPath, name }, 0) catch |err| {
-            return failure(cpuPath, err, .SUCCESS);
-        };
-        const policyFd = try openAt(root, name, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, path);
-        defer _ = std.c.close(policyFd);
-        const fd = try openAt(policyFd, "energy_performance_preference", .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true, .NOFOLLOW = true }, path);
-        defer _ = std.c.close(fd);
-        try write(fd, "dynamic\n", path);
+        const rc = linux.getdents64(root, &dents, dents.len);
+        const err = linux.errno(rc);
+        if (err == .INTR) continue;
+        if (err != .SUCCESS) return failure(cpuPath, error.EnumerateFailed, err);
+        if (rc == 0) break;
+
+        var offset: usize = 0;
+        while (offset < rc) {
+            const entry: *const linux.dirent64 = @ptrCast(@alignCast(&dents[offset]));
+            offset += entry.reclen;
+            const name = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(&entry.name)), 0);
+            if (!isPolicyName(name)) continue;
+            foundPolicy = true;
+            var pathBuf: [std.fs.max_path_bytes]u8 = undefined;
+            const path = std.mem.printSentinel(&pathBuf, "{s}/{s}/energy_performance_preference", .{ cpuPath, name }, 0) catch |e| {
+                return failure(cpuPath, e, .SUCCESS);
+            };
+            const policyFd = try openAt(root, name, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, path);
+            defer _ = linux.close(policyFd);
+            const fd = try openAt(policyFd, "energy_performance_preference", .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true, .NOFOLLOW = true }, path);
+            defer _ = linux.close(fd);
+            try write(fd, "dynamic\n", path);
+        }
     }
     if (!foundPolicy) return failure(cpuPath, error.NoPolicies, .SUCCESS);
 
     // Enabling Dynamic EPP may temporarily produce custom. Reapply the snapshot
     // without reading that transient state or verifying the synchronous write.
-    const fd = try openAt(std.c.AT.FDCWD, profilePath, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true }, profilePath);
-    defer _ = std.c.close(fd);
+    const fd = try openAt(linux.AT.FDCWD, profilePath, .{ .ACCMODE = .WRONLY, .TRUNC = true, .CLOEXEC = true }, profilePath);
+    defer _ = linux.close(fd);
     try write(fd, saved.writeBytes(), profilePath);
 }
 
 fn readInitial(path: [:0]const u8) !profile.KernelProfile {
-    const fd = try openAt(std.c.AT.FDCWD, path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, path);
-    defer _ = std.c.close(fd);
+    const fd = try openAt(linux.AT.FDCWD, path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, path);
+    defer _ = linux.close(fd);
     var buf: [64]u8 = undefined;
-    const n = sysfs.readProfileBytes(fd, &buf) catch |err| return failure(path, err, std.c.errno(-1));
+    var errno: linux.E = .SUCCESS;
+    const n = sysfs.readProfileBytesReport(fd, &buf, &errno) catch |err| return failure(path, err, errno);
     // Sysfs adds one newline. No whitespace normalization or custom fallback.
     const text = if (n > 0 and buf[n - 1] == '\n') buf[0 .. n - 1] else buf[0..n];
     return profile.KernelProfile.parse(text) orelse failure(path, error.UnknownKernelProfile, .SUCCESS);
@@ -70,22 +76,22 @@ fn isPolicyName(name: []const u8) bool {
     return true;
 }
 
-fn openAt(dir: std.c.fd_t, name: [:0]const u8, flags: std.c.O, path: []const u8) !std.c.fd_t {
+fn openAt(dir: linux.fd_t, name: [:0]const u8, flags: linux.O, path: []const u8) !linux.fd_t {
     while (true) {
-        const fd = std.c.openat(dir, name, flags);
-        if (fd >= 0) return fd;
-        const errno = std.c.errno(-1);
-        if (errno == .INTR) continue;
-        return failure(path, error.OpenFailed, errno);
+        const rc = linux.openat(dir, name.ptr, flags, 0);
+        const err = linux.errno(rc);
+        if (err == .SUCCESS) return @intCast(rc);
+        if (err == .INTR) continue;
+        return failure(path, error.OpenFailed, err);
     }
 }
 
-fn write(fd: std.c.fd_t, bytes: []const u8, path: []const u8) !void {
-    std.c._errno().* = 0;
-    sysfs.writeAll(fd, bytes) catch |err| return failure(path, err, std.c.errno(-1));
+fn write(fd: linux.fd_t, bytes: []const u8, path: []const u8) !void {
+    var errno: linux.E = .SUCCESS;
+    sysfs.writeAllReport(fd, bytes, &errno) catch |err| return failure(path, err, errno);
 }
 
-fn failure(path: []const u8, err: anyerror, errno: std.c.E) anyerror {
+fn failure(path: []const u8, err: anyerror, errno: linux.E) anyerror {
     if (!builtin.is_test) std.log.err("{s}: {s} (errno {d}: {t})", .{ path, @errorName(err), @backingInt(errno), errno });
     return err;
 }
@@ -197,12 +203,11 @@ test "reapply failure leaves initialized policies and fails" {
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
         try seedPolicy(tmp.dir, "policy0");
-        const fd = std.c.memfd_create("init-test", std.c.MFD.CLOEXEC | std.c.MFD.ALLOW_SEALING);
-        try std.testing.expect(fd >= 0);
-        defer _ = std.c.close(fd);
+        const fd = try testutil.memfd("init-test");
+        defer testutil.close(fd);
         try sysfs.writeAll(fd, "low-power\n");
-        const seals = std.c.F.SEAL_WRITE | (if (failOpen) @as(c_int, std.c.F.SEAL_SHRINK | std.c.F.SEAL_GROW) else 0);
-        try std.testing.expect(std.c.fcntl(fd, std.c.F.ADD_SEALS, @as(c_int, seals)) >= 0);
+        const seals: usize = linux.F.SEAL_WRITE | (if (failOpen) @as(usize, linux.F.SEAL_SHRINK | linux.F.SEAL_GROW) else 0);
+        try std.testing.expect(testutil.addSeals(fd, seals));
         var profileBuf: [128]u8 = undefined;
         const profilePath = try std.mem.printSentinel(&profileBuf, "/proc/self/fd/{d}", .{fd}, 0);
         var cpuBuf: [std.fs.max_path_bytes]u8 = undefined;
@@ -221,10 +226,10 @@ test "symlinked policies and EPP attributes fail without following them" {
         if (attribute) {
             try tmp.dir.createDirPath(std.testing.io, "policy0");
             const link = try testPath(tmp.dir, "policy0/energy_performance_preference", &linkBuf);
-            try std.testing.expect(std.c.symlink("../target/energy_performance_preference", link) == 0);
+            try std.testing.expect(linux.errno(linux.symlink("../target/energy_performance_preference", link.ptr)) == .SUCCESS);
         } else {
             const link = try testPath(tmp.dir, "policy0", &linkBuf);
-            try std.testing.expect(std.c.symlink("target", link) == 0);
+            try std.testing.expect(linux.errno(linux.symlink("target", link.ptr)) == .SUCCESS);
         }
         var profileBuf: [std.fs.max_path_bytes]u8 = undefined;
         var cpuBuf: [std.fs.max_path_bytes]u8 = undefined;
@@ -240,40 +245,42 @@ test "initialization I/O reads profile once then writes policies before profile 
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "profile", .data = "low-power\n" });
     try seedPolicy(tmp.dir, "policy0");
     try seedPolicy(tmp.dir, "policy1");
-    const fd = std.c.inotify_init1(std.os.linux.IN.NONBLOCK | std.os.linux.IN.CLOEXEC);
-    try std.testing.expect(fd >= 0);
-    defer _ = std.c.close(fd);
+    const inotify_rc = linux.inotify_init1(linux.IN.NONBLOCK | linux.IN.CLOEXEC);
+    try std.testing.expect(linux.errno(inotify_rc) == .SUCCESS);
+    const fd: linux.fd_t = @intCast(inotify_rc);
+    defer testutil.close(fd);
     var pathBuf: [std.fs.max_path_bytes]u8 = undefined;
     var watches: [3]c_int = undefined;
     for ([_][]const u8{ "profile", "policy0/energy_performance_preference", "policy1/energy_performance_preference" }, 0..) |path, i| {
-        watches[i] = std.c.inotify_add_watch(fd, try testPath(tmp.dir, path, &pathBuf), std.os.linux.IN.ACCESS | std.os.linux.IN.CLOSE_WRITE);
-        try std.testing.expect(watches[i] >= 0);
+        const watch_rc = linux.inotify_add_watch(fd, (try testPath(tmp.dir, path, &pathBuf)).ptr, linux.IN.ACCESS | linux.IN.CLOSE_WRITE);
+        try std.testing.expect(linux.errno(watch_rc) == .SUCCESS);
+        watches[i] = @intCast(watch_rc);
     }
     var profileBuf: [std.fs.max_path_bytes]u8 = undefined;
     var cpuBuf: [std.fs.max_path_bytes]u8 = undefined;
     try initialize(try testPath(tmp.dir, "profile", &profileBuf), try testPath(tmp.dir, ".", &cpuBuf));
-    var events: [4096]u8 align(@alignOf(std.os.linux.inotify_event)) = undefined;
-    const n = std.c.read(fd, &events, events.len);
-    try std.testing.expect(n > 0);
+    var events: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
+    const n = linux.read(fd, &events, events.len);
+    try std.testing.expect(linux.errno(n) == .SUCCESS and n > 0);
     var offset: usize = 0;
     var reads: usize = 0;
     var writes: usize = 0;
     var written: [3]bool = @splat(false);
-    while (offset < @as(usize, @intCast(n))) {
-        const event: *const std.os.linux.inotify_event = @ptrCast(@alignCast(&events[offset]));
-        if (event.mask & std.os.linux.IN.ACCESS != 0) {
+    while (offset < n) {
+        const event: *const linux.inotify_event = @ptrCast(@alignCast(&events[offset]));
+        if (event.mask & linux.IN.ACCESS != 0) {
             try std.testing.expectEqual(watches[0], event.wd);
             try std.testing.expectEqual(@as(usize, 0), writes);
             reads += 1;
         }
-        if (event.mask & std.os.linux.IN.CLOSE_WRITE != 0) {
+        if (event.mask & linux.IN.CLOSE_WRITE != 0) {
             const index = std.mem.indexOfScalar(c_int, &watches, event.wd) orelse return error.UnexpectedWatch;
             try std.testing.expect(!written[index]);
             if (index == 0) try std.testing.expectEqual(@as(usize, 2), writes);
             written[index] = true;
             writes += 1;
         }
-        offset += @sizeOf(std.os.linux.inotify_event) + event.len;
+        offset += @sizeOf(linux.inotify_event) + event.len;
     }
     try std.testing.expectEqual(@as(usize, 1), reads);
     try std.testing.expectEqual(@as(usize, 3), writes);

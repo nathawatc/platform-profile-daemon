@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const profile = @import("profile.zig");
 const sysfs_mod = @import("sysfs.zig");
+const testutil = @import("testutil.zig");
 
 pub const Error = error{
     UnsupportedPlatform,
@@ -96,7 +97,7 @@ pub const Daemon = struct {
         }
     }
 
-    pub fn pollFd(self: *Daemon) std.c.fd_t {
+    pub fn pollFd(self: *Daemon) std.os.linux.fd_t {
         return self.sysfs.pollFd();
     }
 };
@@ -112,37 +113,34 @@ fn mapSysfsError(err: sysfs_mod.Error) Error {
 }
 
 fn writeTempProfile(path_buf: []u8, comptime name: []const u8, contents: []const u8) ![:0]const u8 {
-    const path = try std.mem.printSentinel(path_buf, "/tmp/platform-profile-daemon-daemon-test-" ++ name ++ "-{d}", .{std.c.getpid()}, 0);
+    const path = try std.mem.printSentinel(path_buf, "/tmp/platform-profile-daemon-daemon-test-" ++ name ++ "-{d}", .{testutil.pid()}, 0);
     try overwriteProfile(path, contents);
     return path;
 }
 
 fn overwriteProfile(path: [:0]const u8, contents: []const u8) !void {
-    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
-    try std.testing.expect(fd >= 0);
-    defer _ = std.c.close(fd);
-
-    const written = std.c.write(fd, contents.ptr, contents.len);
-    try std.testing.expectEqual(@as(isize, @intCast(contents.len)), written);
+    const fd = try testutil.createFile(path.ptr);
+    defer testutil.close(fd);
+    try testutil.writeBytes(fd, contents);
 }
 
 test "watch propagates setup failure" {
     var path_buf: [128]u8 = undefined;
-    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-watch-missing-{d}", .{std.c.getpid()}, 0);
-    _ = std.c.unlink(path.ptr);
-    defer _ = std.c.unlink(path.ptr);
+    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-watch-missing-{d}", .{testutil.pid()}, 0);
+    testutil.unlink(path.ptr);
+    defer testutil.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
     defer daemon.deinit();
 
     try std.testing.expectError(Error.UnsupportedPlatform, daemon.watch());
-    try std.testing.expectEqual(@as(std.c.fd_t, -1), daemon.pollFd());
+    try std.testing.expectEqual(@as(std.os.linux.fd_t, -1), daemon.pollFd());
 }
 
 test "setting same profile after refresh skips sysfs write" {
     var path_buf: [128]u8 = undefined;
     const path = try writeTempProfile(&path_buf, "same", "balanced\n");
-    defer _ = std.c.unlink(path.ptr);
+    defer testutil.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
     try daemon.refresh();
@@ -153,7 +151,7 @@ test "setting same profile after refresh skips sysfs write" {
 test "stale cached active profile does not skip write" {
     var path_buf: [128]u8 = undefined;
     const path = try writeTempProfile(&path_buf, "stale", "performance\n");
-    defer _ = std.c.unlink(path.ptr);
+    defer testutil.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
     daemon.active = .balanced;
@@ -167,7 +165,7 @@ test "stale cached active profile does not skip write" {
 test "unknown current kernel profile still allows write" {
     var path_buf: [128]u8 = undefined;
     const path = try writeTempProfile(&path_buf, "unknown", "quiet\n");
-    defer _ = std.c.unlink(path.ptr);
+    defer testutil.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
     try std.testing.expectEqual(true, try daemon.setActiveProfile(.balanced));
@@ -180,7 +178,7 @@ test "unknown current kernel profile still allows write" {
 test "custom startup profile fails without writing" {
     var path_buf: [128]u8 = undefined;
     const path = try writeTempProfile(&path_buf, "custom", "custom\n");
-    defer _ = std.c.unlink(path.ptr);
+    defer testutil.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
     try std.testing.expectError(Error.UnknownKernelProfile, daemon.refresh());
@@ -193,7 +191,7 @@ test "custom startup profile fails without writing" {
 test "custom refresh failure preserves cached profile" {
     var path_buf: [128]u8 = undefined;
     const sealed = try sealedCustomProfilePath(&path_buf);
-    defer _ = std.c.close(sealed.fd);
+    defer testutil.close(sealed.fd);
 
     var daemon = Daemon.init(sealed.path);
     daemon.active = .performance;
@@ -205,7 +203,7 @@ test "custom refresh failure preserves cached profile" {
 test "custom external refresh preserves cache and explicit same cached profile converges" {
     var path_buf: [128]u8 = undefined;
     const path = try writeTempProfile(&path_buf, "refresh-custom", "performance\n");
-    defer _ = std.c.unlink(path.ptr);
+    defer testutil.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
     defer daemon.deinit();
@@ -227,7 +225,7 @@ test "custom external refresh preserves cache and explicit same cached profile c
 test "custom external refresh on sealed file preserves cached profile" {
     var path_buf: [128]u8 = undefined;
     const sealed = try sealedCustomProfilePath(&path_buf);
-    defer _ = std.c.close(sealed.fd);
+    defer testutil.close(sealed.fd);
 
     var daemon = Daemon.init(sealed.path);
     defer daemon.deinit();
@@ -241,7 +239,7 @@ test "custom external refresh on sealed file preserves cached profile" {
 test "custom external refresh from balanced reports no visible change" {
     var path_buf: [128]u8 = undefined;
     const path = try writeTempProfile(&path_buf, "refresh-custom-balanced", "balanced\n");
-    defer _ = std.c.unlink(path.ptr);
+    defer testutil.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
     defer daemon.deinit();
@@ -261,7 +259,7 @@ test "custom external refresh from balanced reports no visible change" {
 test "invalid external refresh keeps cached profile unchanged and reports no change" {
     var path_buf: [128]u8 = undefined;
     const path = try writeTempProfile(&path_buf, "refresh-invalid", "balanced\n");
-    defer _ = std.c.unlink(path.ptr);
+    defer testutil.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
     defer daemon.deinit();
@@ -275,17 +273,16 @@ test "invalid external refresh keeps cached profile unchanged and reports no cha
     try std.testing.expectEqualStrings("balanced", daemon.activeName());
 }
 
-fn sealedCustomProfilePath(path_buf: []u8) !struct { fd: std.c.fd_t, path: [:0]const u8 } {
-    const fd = std.c.memfd_create("platform-profile-daemon-test", std.c.MFD.CLOEXEC | std.c.MFD.ALLOW_SEALING);
-    if (fd < 0) return error.SkipZigTest;
-    errdefer _ = std.c.close(fd);
+fn sealedCustomProfilePath(path_buf: []u8) !struct { fd: std.os.linux.fd_t, path: [:0]const u8 } {
+    const linux = std.os.linux;
+    const fd = testutil.memfd("platform-profile-daemon-test") catch return error.SkipZigTest;
+    errdefer testutil.close(fd);
 
-    const written = std.c.write(fd, "custom\n", "custom\n".len);
-    try std.testing.expectEqual(@as(isize, "custom\n".len), written);
-    try std.testing.expect(std.c.lseek(fd, 0, 0) >= 0);
+    try testutil.writeBytes(fd, "custom\n");
+    try std.testing.expect(linux.errno(linux.lseek(fd, 0, 0)) == .SUCCESS);
 
-    const seals = std.c.F.SEAL_WRITE | std.c.F.SEAL_SHRINK | std.c.F.SEAL_GROW | std.c.F.SEAL_SEAL;
-    if (std.c.fcntl(fd, std.c.F.ADD_SEALS, @as(c_int, seals)) < 0) return error.SkipZigTest;
+    const seals = linux.F.SEAL_WRITE | linux.F.SEAL_SHRINK | linux.F.SEAL_GROW | linux.F.SEAL_SEAL;
+    if (!testutil.addSeals(fd, seals)) return error.SkipZigTest;
 
     const path = try std.mem.printSentinel(path_buf, "/proc/self/fd/{d}", .{fd}, 0);
     return .{ .fd = fd, .path = path };
@@ -294,7 +291,7 @@ fn sealedCustomProfilePath(path_buf: []u8) !struct { fd: std.c.fd_t, path: [:0]c
 test "malformed external refresh keeps cached profile unchanged and reports no change" {
     var path_buf: [128]u8 = undefined;
     const path = try writeTempProfile(&path_buf, "refresh-malformed", "balanced\n");
-    defer _ = std.c.unlink(path.ptr);
+    defer testutil.unlink(path.ptr);
 
     var daemon = Daemon.init(path);
     defer daemon.deinit();
