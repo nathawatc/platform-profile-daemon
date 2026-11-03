@@ -1,14 +1,20 @@
 const std = @import("std");
 const daemon_mod = @import("daemon.zig");
 const dbus = @import("dbus.zig");
+const rt = @import("rt.zig");
 
-pub const std_options: std.Options = .{
-    .signal_stack_size = null,
-};
+pub const std_options = rt.std_options;
+pub const panic = std.debug.FullPanic(rt.panicFn);
 
 const default_platform_profile_path = "/sys/firmware/acpi/platform_profile";
 
-pub fn main(init: std.process.Init.Minimal) !void {
+/// Returns the exit status directly so std.start never prints error traces.
+pub fn main(init: std.process.Init.Minimal) u8 {
+    run(init) catch return 1;
+    return 0;
+}
+
+fn run(init: std.process.Init.Minimal) !void {
     var args = std.process.Args.Iterator.init(init.args);
     const platform_profile_path = parsePlatformProfilePathIterator(&args) catch |err| {
         std.log.err("{}", .{err});
@@ -26,7 +32,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         return err;
     };
 
-    dbus.run(&daemon) catch |err| {
+    dbus.run(&daemon, init.environ.getPosix("DBUS_SYSTEM_BUS_ADDRESS")) catch |err| {
         std.log.err("D-Bus service failed: {}", .{err});
         return err;
     };
@@ -53,8 +59,8 @@ fn parsePlatformProfilePathIterator(args: anytype) ![:0]const u8 {
     var platform_profile_path: [:0]const u8 = default_platform_profile_path;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help")) {
-            std.debug.print("usage: platform-profile-daemon [--platform-profile PATH]\n", .{});
-            std.process.exit(0);
+            rt.writeStdout("usage: platform-profile-daemon [--platform-profile PATH]\n");
+            rt.exit(0);
         }
         if (std.mem.eql(u8, arg, "--platform-profile")) {
             const path = args.next() orelse return error.MissingPlatformProfilePath;
@@ -95,5 +101,6 @@ test {
     _ = @import("daemon.zig");
     _ = @import("dbus.zig");
     _ = @import("profile.zig");
+    _ = @import("rt.zig");
     _ = @import("sysfs.zig");
 }

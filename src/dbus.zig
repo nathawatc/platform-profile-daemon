@@ -58,17 +58,17 @@ const field_signature: u8 = 8;
 const header_len = 16;
 const max_message_len: u64 = 1 << 27;
 
-const AF_UNIX = 1;
-const SOCK_STREAM = 1;
-const SOCK_CLOEXEC = 0o2000000;
-const MSG_NOSIGNAL = 0x4000;
-const POLLIN: i16 = 0x001;
-const POLLPRI: i16 = 0x002;
-const POLLERR: i16 = 0x008;
-const POLLHUP: i16 = 0x010;
-const POLLNVAL: i16 = 0x020;
+const linux = std.os.linux;
 
-extern "c" fn socket(domain: c_int, sock_type: c_int, protocol: c_int) c_int;
+const AF_UNIX = linux.AF.UNIX;
+const SOCK_STREAM = linux.SOCK.STREAM;
+const SOCK_CLOEXEC = linux.SOCK.CLOEXEC;
+const MSG_NOSIGNAL = linux.MSG.NOSIGNAL;
+const POLLIN: i16 = linux.POLL.IN;
+const POLLPRI: i16 = linux.POLL.PRI;
+const POLLERR: i16 = linux.POLL.ERR;
+const POLLHUP: i16 = linux.POLL.HUP;
+const POLLNVAL: i16 = linux.POLL.NVAL;
 
 const SockaddrUn = extern struct {
     family: u16 = AF_UNIX,
@@ -417,14 +417,14 @@ fn parseMessage(buf: []const u8) ?Message {
 // ---------------------------------------------------------------------------
 
 fn nowMs() i64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    var ts: linux.timespec = undefined;
+    _ = linux.clock_gettime(.MONOTONIC, &ts);
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
 }
 
-fn connectBus() !std.c.fd_t {
-    const env = std.c.getenv("DBUS_SYSTEM_BUS_ADDRESS");
-    var address: []const u8 = if (env) |p| std.mem.sliceTo(p, 0) else default_bus_address;
+/// `bus_address` is the value of `DBUS_SYSTEM_BUS_ADDRESS`, if set.
+fn connectBus(bus_address: ?[]const u8) !linux.fd_t {
+    var address: []const u8 = bus_address orelse default_bus_address;
     if (std.mem.indexOfScalar(u8, address, ';')) |end| address = address[0..end];
     if (!std.mem.startsWith(u8, address, "unix:")) return error.UnsupportedBusAddress;
 
@@ -448,10 +448,11 @@ fn connectBus() !std.c.fd_t {
     }
     if (addr_len == 0) return error.UnsupportedBusAddress;
 
-    const fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return error.SocketFailed;
-    errdefer _ = std.c.close(fd);
-    if (std.c.connect(fd, @ptrCast(&sa), @intCast(addr_len)) < 0) return error.ConnectFailed;
+    const sock_rc = linux.socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (linux.errno(sock_rc) != .SUCCESS) return error.SocketFailed;
+    const fd: linux.fd_t = @intCast(sock_rc);
+    errdefer _ = linux.close(fd);
+    if (linux.errno(linux.connect(fd, &sa, @intCast(addr_len))) != .SUCCESS) return error.ConnectFailed;
     return fd;
 }
 
@@ -459,7 +460,7 @@ fn connectBus() !std.c.fd_t {
 const ServeError = error{ NoSpace, SendFailed, RecvFailed, Closed, PollFailed, Protocol, Timeout };
 
 const Bus = struct {
-    fd: std.c.fd_t,
+    fd: linux.fd_t,
     daemon: *daemon_mod.Daemon,
     next_serial: u32 = 1,
     /// Raw bytes read from the socket. Complete frames are copied to `cur`
@@ -485,25 +486,24 @@ const Bus = struct {
     fn sendAll(self: *Bus, data: []const u8) !void {
         var off: usize = 0;
         while (off < data.len) {
-            const n = std.c.send(self.fd, data[off..].ptr, data.len - off, MSG_NOSIGNAL);
-            if (n < 0) {
-                if (std.c.errno(n) == .INTR) continue;
-                return error.SendFailed;
+            const rc = linux.sendto(self.fd, data[off..].ptr, data.len - off, MSG_NOSIGNAL, null, 0);
+            switch (linux.errno(rc)) {
+                .SUCCESS => off += rc,
+                .INTR => continue,
+                else => return error.SendFailed,
             }
-            off += @intCast(n);
         }
     }
 
     fn recvSome(self: *Bus) !void {
-        const n = std.c.recv(self.fd, &self.rbuf[self.rlen], self.rbuf.len - self.rlen, 0);
-        if (n == 0) return error.Closed;
-        if (n < 0) {
-            switch (std.c.errno(n)) {
-                .INTR, .AGAIN => return,
-                else => return error.RecvFailed,
-            }
+        const rc = linux.recvfrom(self.fd, self.rbuf[self.rlen..].ptr, self.rbuf.len - self.rlen, 0, null, null);
+        switch (linux.errno(rc)) {
+            .SUCCESS => {},
+            .INTR, .AGAIN => return,
+            else => return error.RecvFailed,
         }
-        self.rlen += @intCast(n);
+        if (rc == 0) return error.Closed;
+        self.rlen += rc;
     }
 
     fn consume(self: *Bus, n: usize) void {
@@ -556,11 +556,12 @@ const Bus = struct {
             if (try self.processFrames(serial)) return;
             const left = deadline - nowMs();
             if (left <= 0) return error.Timeout;
-            var pfd = [1]std.c.pollfd{.{ .fd = self.fd, .events = POLLIN, .revents = 0 }};
-            const rc = std.c.poll(&pfd, 1, @intCast(left));
-            if (rc < 0) {
-                if (std.c.errno(rc) == .INTR) continue;
-                return error.PollFailed;
+            var pfd = [1]linux.pollfd{.{ .fd = self.fd, .events = POLLIN, .revents = 0 }};
+            const rc = linux.poll(&pfd, 1, @intCast(left));
+            switch (linux.errno(rc)) {
+                .SUCCESS => {},
+                .INTR => continue,
+                else => return error.PollFailed,
             }
             if (rc == 0) return error.Timeout;
             try self.recvSome();
@@ -570,7 +571,7 @@ const Bus = struct {
     fn handshake(self: *Bus) !void {
         // SASL EXTERNAL with our effective uid as hex-encoded decimal text.
         var uid_text: [16]u8 = undefined;
-        const uid = std.fmt.bufPrint(&uid_text, "{d}", .{std.c.geteuid()}) catch unreachable;
+        const uid = std.fmt.bufPrint(&uid_text, "{d}", .{linux.geteuid()}) catch unreachable;
         var line: [64]u8 = undefined;
         var w: Writer = .{ .buf = &line };
         try w.putRaw("\x00AUTH EXTERNAL ");
@@ -881,9 +882,11 @@ fn denial(buf: []u8, reason: []const u8) []const u8 {
 
 /// Connects to the system bus, claims the service name, and serves requests
 /// and platform_profile change events until the connection fails.
-pub fn run(daemon: *daemon_mod.Daemon) !void {
-    const fd = try connectBus();
-    defer _ = std.c.close(fd);
+/// `bus_address` overrides the default system bus address
+/// (`DBUS_SYSTEM_BUS_ADDRESS` from the environment).
+pub fn run(daemon: *daemon_mod.Daemon, bus_address: ?[]const u8) !void {
+    const fd = try connectBus(bus_address);
+    defer _ = linux.close(fd);
 
     var bus: Bus = .{ .fd = fd, .daemon = daemon };
     try bus.handshake();
@@ -892,15 +895,15 @@ pub fn run(daemon: *daemon_mod.Daemon) !void {
         _ = try bus.processFrames(null);
 
         const sysfs_fd = daemon.pollFd();
-        var fds = [2]std.c.pollfd{
+        var fds = [2]linux.pollfd{
             .{ .fd = fd, .events = POLLIN, .revents = 0 },
             .{ .fd = sysfs_fd, .events = POLLPRI | POLLERR, .revents = 0 },
         };
-        const nfds: std.c.nfds_t = if (sysfs_fd >= 0) 2 else 1;
-        const rc = std.c.poll(&fds, nfds, -1);
-        if (rc < 0) {
-            if (std.c.errno(rc) == .INTR) continue;
-            return error.PollFailed;
+        const nfds: linux.nfds_t = if (sysfs_fd >= 0) 2 else 1;
+        switch (linux.errno(linux.poll(&fds, nfds, -1))) {
+            .SUCCESS => {},
+            .INTR => continue,
+            else => return error.PollFailed,
         }
 
         if (fds[0].revents != 0) try bus.recvSome();
@@ -914,32 +917,30 @@ pub fn run(daemon: *daemon_mod.Daemon) !void {
 // Tests
 // ---------------------------------------------------------------------------
 
-extern "c" fn socketpair(domain: c_int, sock_type: c_int, protocol: c_int, sv: *[2]c_int) c_int;
-
 const TestPair = struct {
     bus: *Bus,
-    peer: std.c.fd_t,
+    peer: linux.fd_t,
 
     fn deinit(self: TestPair) void {
-        _ = std.c.close(self.bus.fd);
-        _ = std.c.close(self.peer);
+        _ = linux.close(self.bus.fd);
+        _ = linux.close(self.peer);
     }
 
     /// Sends a method call from the peer, runs the bus, returns the single reply in `out`.
     fn roundTrip(self: TestPair, w: *Writer, out: []u8) !Message {
         w.finish();
-        try std.testing.expectEqual(@as(isize, @intCast(w.len)), std.c.send(self.peer, w.buf.ptr, w.len, 0));
+        try std.testing.expectEqual(w.len, linux.sendto(self.peer, w.buf.ptr, w.len, 0, null, 0));
         try self.bus.recvSome();
         _ = try self.bus.processFrames(null);
-        const n = std.c.recv(self.peer, out.ptr, out.len, 0);
-        try std.testing.expect(n > 0);
-        return parseMessage(out[0..@intCast(n)]) orelse error.BadReply;
+        const n = linux.recvfrom(self.peer, out.ptr, out.len, 0, null, null);
+        try std.testing.expect(linux.errno(n) == .SUCCESS and n > 0);
+        return parseMessage(out[0..n]) orelse error.BadReply;
     }
 };
 
 fn testPair(bus: *Bus, daemon: *daemon_mod.Daemon) !TestPair {
-    var sv: [2]c_int = undefined;
-    try std.testing.expectEqual(@as(c_int, 0), socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, &sv));
+    var sv: [2]linux.fd_t = undefined;
+    try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, &sv)));
     bus.* = .{ .fd = sv[0], .daemon = daemon };
     return .{ .bus = bus, .peer = sv[1] };
 }
