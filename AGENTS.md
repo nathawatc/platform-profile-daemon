@@ -385,6 +385,18 @@ zig build test --fuzz=500K -Dllvm=true
 
 Keep new byte-parsing code covered the same way.
 
+`src/dbus/testdata/` holds real frames captured from sd-bus (`busctl`), GDBus
+(the fake Polkit responder) and dbus-daemon, plus the daemon's own replies and
+signals. The parser and framing tests replay them, including mutation and
+chunking sweeps. `frames.zig` and the `.bin` files are generated; regenerate
+them when the protocol surface changes and never edit them by hand:
+
+```sh
+CAPTURE_PCAP=/tmp/ppd.pcap unshare --user --map-root-user \
+    python3 tools/dbus-isolated-smoke.py
+python3 tools/capture-corpus.py /tmp/ppd.pcap
+```
+
 For D-Bus, service or authorization changes, also run the system-bus smoke
 test on a root/systemd target:
 
@@ -407,9 +419,12 @@ To exercise the watchdog, `sudo kill -STOP` the daemon: systemd restarts it
 after about 30 s ("Watchdog timeout" in the journal).
 
 The smoke test should cover reads, writes, invalid input rejection, mapping
-correctness and same-profile no-write behavior. Fake-file tests cannot produce `POLLPRI`,
-so validate change notification on the target machine with `busctl monitor`
-while changing `platform_profile`, and again while a Polkit prompt is open.
+correctness and same-profile no-write behavior. Against the real sysfs it also
+writes a different profile straight into `platform_profile` and requires the
+daemon to follow it and emit `PropertiesChanged` (skip with
+`SKIP_EXTERNAL=1`). Fake files cannot produce `POLLPRI`, so the isolated smoke
+test never runs that check; the loop wiring is unit-tested with an injected
+poll function, so a prompt open in Polkit cannot starve the watch.
 
 ## Commit and PR
 

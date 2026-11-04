@@ -385,3 +385,34 @@ test "every truncation and single-byte corruption of valid messages is handled" 
         }
     }
 }
+
+const captured = @import("testdata/frames.zig").frames;
+
+test "frames written by sd-bus, GDBus and dbus-daemon parse as their encoders meant" {
+    try std.testing.expect(captured.len >= 15);
+    for (captured) |f| {
+        const m = parseMessage(f.bytes) orelse return error.CapturedFrameRejected;
+        try std.testing.expectEqual(f.kind, m.kind);
+        try std.testing.expectEqual(f.serial, m.serial);
+        try std.testing.expectEqualStrings(f.member, m.member);
+        try std.testing.expectEqualStrings(f.sig, m.sig);
+        try std.testing.expectEqual(@as(?usize, f.bytes.len), frameLength(f.bytes[0..header_len]));
+        try checkParse(f.bytes);
+    }
+}
+
+test "every truncation and sampled corruption of captured frames is handled" {
+    var copy: [4096]u8 = undefined;
+    for (captured) |f| {
+        for (0..f.bytes.len + 1) |len| try checkParse(f.bytes[0..len]);
+        // Dense over the header and field area, sparse over the body.
+        for (0..f.bytes.len) |i| {
+            if (i >= 160 and i % 7 != 0) continue;
+            for ([_]u8{ 0x00, 0x01, 0x7f, 0x80, 0xff, f.bytes[i] ^ 0x01 }) |value| {
+                @memcpy(copy[0..f.bytes.len], f.bytes);
+                copy[i] = value;
+                try checkParse(copy[0..f.bytes.len]);
+            }
+        }
+    }
+}

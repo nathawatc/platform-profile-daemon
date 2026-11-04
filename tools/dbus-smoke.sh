@@ -49,6 +49,12 @@ assert_profile_state() {
 	[[ $kernel_value == "$expected_kernel" ]] || die "sysfs changed unexpectedly: expected=$expected_kernel got=$kernel_value"
 }
 
+cleanup() {
+	[[ -z ${MONITOR_PID:-} ]] || kill "$MONITOR_PID" 2> /dev/null || true
+	[[ -z ${MONITOR_OUT:-} ]] || rm -f -- "$MONITOR_OUT"
+	restore_original
+}
+
 restore_original() {
 	if [[ -n ${ORIGINAL_PROFILE:-} ]]; then
 		echo "Restoring original profile: $ORIGINAL_PROFILE"
@@ -61,7 +67,7 @@ command -v busctl > /dev/null 2>&1 || die "missing busctl"
 [[ -e $PLATFORM_PROFILE_PATH ]] || die "sysfs path not found: $PLATFORM_PROFILE_PATH"
 [[ -w $PLATFORM_PROFILE_PATH ]] || die "sysfs path is not writable: $PLATFORM_PROFILE_PATH"
 
-trap restore_original EXIT
+trap cleanup EXIT
 
 ORIGINAL_PROFILE="$(extract_active_profile || true)"
 echo "Original ActiveProfile: ${ORIGINAL_PROFILE:-<unknown>}"
@@ -107,5 +113,44 @@ run_fail busctl --system set-property "$BUS_NAME" "$OBJECT_PATH" "$INTERFACE" No
 assert_profile_state "$INVALID_BASELINE_ACTIVE" "$INVALID_BASELINE_KERNEL"
 run_fail busctl --system set-property "$BUS_NAME" /org/freedesktop/UPower/NotPowerProfiles "$INTERFACE" ActiveProfile s balanced
 assert_profile_state "$INVALID_BASELINE_ACTIVE" "$INVALID_BASELINE_KERNEL"
+
+# A change made behind the daemon's back (firmware hotkey, another tool) must be
+# followed and announced. Only the real kernel raises POLLPRI on sysfs, so this
+# runs against /sys and is skipped for fake files (set SKIP_EXTERNAL=1 to skip).
+if [[ $PLATFORM_PROFILE_PATH == /sys/* && ${SKIP_EXTERNAL:-} != 1 ]]; then
+	command -v dbus-monitor > /dev/null 2>&1 || die "missing dbus-monitor"
+	ORIGINAL_KERNEL="$(tr -d '\n' < "$PLATFORM_PROFILE_PATH")"
+	case $(extract_active_profile) in
+		balanced)
+			other_dbus=performance
+			other_kernel=performance
+			;;
+		*)
+			other_dbus=balanced
+			other_kernel=balanced
+			;;
+	esac
+	MONITOR_OUT="$(mktemp)"
+	dbus-monitor --system "type='signal',path='$OBJECT_PATH',member='PropertiesChanged'" > "$MONITOR_OUT" &
+	MONITOR_PID=$!
+	sleep 0.5
+	echo "+ external change: $other_kernel written straight to sysfs"
+	printf '%s\n' "$other_kernel" > "$PLATFORM_PROFILE_PATH"
+	for _ in $(seq 30); do
+		[[ $(extract_active_profile) == "$other_dbus" ]] && break
+		sleep 0.1
+	done
+	[[ $(extract_active_profile) == "$other_dbus" ]] \
+		|| die "ActiveProfile did not follow an external sysfs change to $other_dbus"
+	sleep 0.3
+	grep -q "string \"$other_dbus\"" "$MONITOR_OUT" \
+		|| die "no PropertiesChanged signal for the external change to $other_dbus"
+	kill "$MONITOR_PID" 2> /dev/null || true
+	MONITOR_PID=
+	printf '%s\n' "$ORIGINAL_KERNEL" > "$PLATFORM_PROFILE_PATH"
+	echo "External sysfs change was followed and announced."
+else
+	echo "Skipping the external-change check (needs the real sysfs; a regular file never raises POLLPRI)."
+fi
 
 echo "D-Bus smoke test passed."

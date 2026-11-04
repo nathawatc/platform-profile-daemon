@@ -4,6 +4,10 @@
 Requires python-gobject, dbus-daemon, busctl, and unprivileged user namespaces:
     unshare --user --map-root-user python3 tools/dbus-isolated-smoke.py
 No host services or real sysfs files are changed.
+
+Set CAPTURE_PCAP=/path/file.pcap to also record the private bus with
+`dbus-monitor --pcap`; tools/capture-corpus.py turns that into the parser
+test corpus.
 """
 
 import os
@@ -11,6 +15,7 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 # PyGObject creates these modules at runtime from installed introspection data.
@@ -36,6 +41,8 @@ def main():
         text=True,
     )
     daemon = None
+    monitor = None
+    capture_fd = None
     loop = GLib.MainLoop()
     thread = None
     try:
@@ -67,6 +74,19 @@ def main():
             None,
             None,
         )
+        capture = os.environ.get("CAPTURE_PCAP")
+        if capture:
+            capture_fd = os.open(capture, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            monitor = subprocess.Popen(
+                [
+                    "dbus-monitor",
+                    "--address",
+                    os.environ["DBUS_SYSTEM_BUS_ADDRESS"],
+                    "--pcap",
+                ],
+                stdout=capture_fd,
+            )
+            time.sleep(1)  # let the monitor attach before any traffic
         thread = threading.Thread(target=loop.run)
         thread.start()
         ready = threading.Event()
@@ -142,6 +162,12 @@ def main():
                 "same-profile no-write, custom convergence, READY=1 and watchdog pings."
             )
     finally:
+        if monitor is not None:
+            time.sleep(0.5)  # let the last packets reach the capture
+            monitor.terminate()
+            monitor.wait(timeout=5)
+        if capture_fd is not None:
+            os.close(capture_fd)
         if daemon is not None:
             daemon.terminate()
             daemon.wait(timeout=5)

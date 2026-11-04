@@ -84,7 +84,7 @@ sudo systemctl daemon-reload
 sudo systemctl restart platform-profile-daemon-init platform-profile-daemon
 systemctl status platform-profile-daemon   # active, started via READY=1
 journalctl -u platform-profile-daemon -b   # no seccomp (SIGSYS) kills
-sudo ./tools/dbus-smoke.sh
+sudo ./tools/dbus-smoke.sh   # also checks a change made directly in sysfs
 systemd-analyze security platform-profile-daemon.service
 ```
 

@@ -335,3 +335,31 @@ fn fuzzFrames(_: void, smith: *std.testing.Smith) anyerror!void {
 test "fuzz: framing never panics or overruns its buffers" {
     try std.testing.fuzz({}, fuzzFrames, .{});
 }
+
+test "captured frames survive any chunking, in order and byte for byte" {
+    const captured = @import("testdata/frames.zig").frames;
+    var stream: [32768]u8 = undefined;
+    var len: usize = 0;
+    for (captured) |f| {
+        @memcpy(stream[len..][0..f.bytes.len], f.bytes);
+        len += f.bytes.len;
+    }
+
+    for ([_]usize{ 1, 5, 64, 997 }) |chunk| {
+        var t: Transport = .{ .fd = -1 };
+        var fed: usize = 0;
+        var seen: usize = 0;
+        while (fed < len) {
+            const take = @min(chunk, len - fed, t.rbuf.len - t.rlen);
+            @memcpy(t.rbuf[t.rlen..][0..take], stream[fed..][0..take]);
+            t.rlen += take;
+            fed += take;
+            while (try t.nextFrame()) |frame| {
+                try std.testing.expectEqualSlices(u8, captured[seen].bytes, frame);
+                seen += 1;
+            }
+        }
+        try std.testing.expectEqual(captured.len, seen);
+        try std.testing.expectEqual(@as(usize, 0), t.rlen);
+    }
+}

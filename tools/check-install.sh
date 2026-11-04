@@ -44,9 +44,15 @@ for setting in 'PrivateDevices=yes' 'PrivateNetwork=yes' 'ProtectKernelLogs=yes'
 	grep -qx "$setting" "$daemon"
 done
 # These would break the sysfs write.
-! grep -Eq '^(ProtectKernelTunables|PrivateUsers|User|DynamicUser)=' "$daemon" "$init"
+if grep -Eq '^(ProtectKernelTunables|PrivateUsers|User|DynamicUser)=' "$daemon" "$init"; then
+	echo 'A unit sets a directive that breaks the sysfs write' >&2
+	exit 1
+fi
 if grep -q '^Alias=power-profiles-daemon.service' "$daemon"; then
-	! grep -q '^Conflicts=.*power-profiles-daemon.service' "$daemon"
+	if grep -q '^Conflicts=.*power-profiles-daemon.service' "$daemon"; then
+		echo 'Conflicts= combined with Alias=power-profiles-daemon.service' >&2
+		exit 1
+	fi
 fi
 for binary in platform-profile-daemon platform-profile-daemon-init; do
 	if strings "$prefix/lib/$binary" | grep -Eq 'testutil|std/testing|testing\.zig'; then
