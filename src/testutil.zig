@@ -1,4 +1,4 @@
-//! Test-only raw-syscall helpers. Never imported by runtime code.
+//! Test-only helpers. Never imported by runtime code.
 const std = @import("std");
 const linux = std.os.linux;
 
@@ -7,32 +7,14 @@ pub fn failure(err: linux.E) usize {
     return @bitCast(-@as(isize, @backingInt(err)));
 }
 
-/// Creates or truncates `path` for writing (mode 0600).
-pub fn createFile(path: [*:0]const u8) !linux.fd_t {
-    const rc = linux.openat(linux.AT.FDCWD, path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, 0o600);
-    if (linux.errno(rc) != .SUCCESS) return error.CreateFailed;
-    return @intCast(rc);
+/// Absolute, NUL-terminated path of `name` inside `dir` (`"."` for `dir` itself).
+pub fn tmpPath(dir: std.Io.Dir, name: []const u8, buf: []u8) ![:0]const u8 {
+    var root: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try dir.realPath(std.testing.io, &root);
+    return std.mem.printSentinel(buf, "{s}/{s}", .{ root[0..n], name }, 0);
 }
 
-pub fn close(fd: linux.fd_t) void {
-    _ = linux.close(fd);
-}
-
-pub fn unlink(path: [*:0]const u8) void {
-    _ = linux.unlink(path);
-}
-
-pub fn pid() linux.pid_t {
-    return linux.getpid();
-}
-
-/// Writes all of `bytes` with the real `write(2)` syscall.
-pub fn writeBytes(fd: linux.fd_t, bytes: []const u8) !void {
-    const rc = linux.write(fd, bytes.ptr, bytes.len);
-    if (linux.errno(rc) != .SUCCESS or rc != bytes.len) return error.WriteFailed;
-}
-
-/// Creates a sealed-contents memfd, as used to force write/open failures.
+/// Creates a sealable memfd, as used to force write/open failures.
 pub fn memfd(name: [*:0]const u8) !linux.fd_t {
     const rc = linux.memfd_create(name, linux.MFD.CLOEXEC | linux.MFD.ALLOW_SEALING);
     if (linux.errno(rc) != .SUCCESS) return error.MemfdFailed;

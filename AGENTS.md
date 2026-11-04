@@ -12,11 +12,18 @@ Daemon D-Bus API. It maps profile changes to one sysfs file:
 - `src/main.zig`: process entrypoint and CLI parsing.
 - `src/init.zig`: short-lived Dynamic EPP initialization and saved profile reapplication.
 - `src/daemon.zig`: cached daemon state and profile-change orchestration.
-- `src/profile.zig`: fixed D-Bus/kernel profile mapping.
-- `src/sysfs.zig`: direct sysfs read/write helpers.
+- `src/profile.zig`: the single `Profile` enum, fixed D-Bus/kernel mapping and the
+  strict `platform_profile` parser shared by both executables.
+- `src/sysfs.zig`: the held-open `platform_profile` file: read, fresh read, write.
+- `src/sys.zig`: raw syscall I/O (`open`, `readAll`, `writeAll`) with `EINTR` and
+  short-transfer handling and errno capture; shared by both executables.
 - `src/rt.zig`: libc-free runtime shared by both executables (panic and log handlers).
-- `src/testutil.zig`: test-only raw-syscall helpers; never imported by runtime code.
-- `src/dbus.zig`: native D-Bus wire protocol, service, properties, signals, Polkit.
+- `src/testutil.zig`: test-only helpers; never imported by runtime code.
+- `src/dbus.zig`: the PowerProfiles service: properties, dispatch, signals, run loop.
+- `src/dbus/wire.zig`: D-Bus marshalling and message parsing.
+- `src/dbus/transport.zig`: bus address, socket, SASL EXTERNAL, message framing.
+- `src/dbus/polkit.zig`: Polkit request encoding and reply decoding.
+- `src/dbus/introspection.xml`: introspection data, embedded with `@embedFile`.
 - `data/`: systemd unit, D-Bus activation/policy, and Polkit policy files.
 
 > [!NOTE]
@@ -50,8 +57,8 @@ Use fake sysfs for development tests. Write the real
 
 Both executables are static, non-PIE and libc-free. They issue raw Linux
 syscalls through `std.os.linux` and decode failures with `linux.errno()`; there
-is no global `errno`, so helpers that need it for logging take an `errno_out`
-pointer (see `sysfs.writeAllReport`). Do not add `link_libc`, `std.c`, `extern
+is no global `errno`, so `sys.zig` helpers return `error.Sys` and store the errno
+through an out-pointer for callers to map and log. Do not add `link_libc`, `std.c`, `extern
 "c"`, `std.debug.print`, or `std.process.exit` to runtime code.
 
 Each root file declares `std_options = rt.std_options` and
@@ -134,6 +141,12 @@ Preserve strict runtime state semantics:
 
 - runtime sysfs read/parse failure must not fall back to `balanced`
 - invalid, empty, or malformed refresh must keep cached state unchanged
+- `platform_profile` is parsed in one place (`Profile.parseKernel`): an exact
+  name with at most one trailing newline, no other whitespace
+- a read error on the watched fd means the watch is lost: the daemon exits so
+  systemd restarts it, instead of continuing without change events
+- handlers announce `PropertiesChanged` whenever the cached profile differs
+  before and after an operation, including when it then fails
 - cache may update only after a valid external read or successful sysfs write
 - read/write helpers must handle `EINTR`, short reads/writes, and fd cleanup
 - expected warning noise may be suppressed in tests only, not runtime

@@ -1,306 +1,207 @@
+//! Cached `ActiveProfile` state and the rules for changing it.
+//!
+//! The cache is updated only from a valid read of `platform_profile` or after a
+//! successful write. Custom, unknown, empty or malformed content never replaces
+//! it, and nothing falls back to a default.
 const std = @import("std");
 const builtin = @import("builtin");
 const profile = @import("profile.zig");
 const sysfs_mod = @import("sysfs.zig");
 const testutil = @import("testutil.zig");
 
-pub const Error = error{
-    UnsupportedPlatform,
-    UnknownKernelProfile,
-    PermissionDenied,
-    WriteFailed,
-    ReadFailed,
-};
-
 pub const Daemon = struct {
     sysfs: sysfs_mod.Sysfs,
-    active: ?profile.DbusProfile = null,
+    active: profile.Profile,
 
-    pub fn init(platform_profile_path: [:0]const u8) Daemon {
-        return .{ .sysfs = sysfs_mod.Sysfs.init(platform_profile_path) };
+    /// Opens `platform_profile` and primes the cache. Startup `custom`,
+    /// unknown or unreadable content is an error: nothing is chosen for it.
+    pub fn init(path: [:0]const u8) sysfs_mod.Error!Daemon {
+        const sysfs = try sysfs_mod.Sysfs.open(path);
+        errdefer sysfs.close();
+        return .{ .sysfs = sysfs, .active = try sysfs.read() };
     }
 
-    pub fn deinit(self: *Daemon) void {
-        self.sysfs.deinit();
+    pub fn deinit(self: Daemon) void {
+        self.sysfs.close();
     }
 
-    pub fn watch(self: *Daemon) Error!void {
-        self.sysfs.watch() catch |err| {
-            return mapSysfsError(err);
-        };
-    }
-
-    pub fn refresh(self: *Daemon) Error!void {
-        const current = self.sysfs.readCurrentProfile() catch |err| {
-            return mapSysfsError(err);
-        };
-
-        switch (current) {
-            .supported => |kernel_profile| {
-                self.active = profile.dbusForKernel(kernel_profile);
-            },
-            .custom => {
-                return Error.UnknownKernelProfile;
-            },
-        }
-    }
-
-    pub fn activeName(self: *const Daemon) [:0]const u8 {
-        return if (self.active) |active| active.name() else "";
-    }
-
-    pub fn setActiveProfile(self: *Daemon, requested: profile.DbusProfile) Error!bool {
-        const current_kernel_profile: ?profile.KernelProfile = self.sysfs.readCurrent() catch |err| blk: {
-            const mapped = mapSysfsError(err);
-            if (mapped != Error.UnknownKernelProfile) return mapped;
-            break :blk null;
-        };
-
-        if (current_kernel_profile) |kernel_profile| {
-            const current = profile.dbusForKernel(kernel_profile);
+    /// Applies an explicit request. The kernel is read fresh and written
+    /// unless it already holds `requested`, so a request still reaches the
+    /// kernel when its state is custom or inconsistent with the cache.
+    /// Callers detect a visible change by comparing `active` before and after,
+    /// including when this fails after refreshing the cache.
+    pub fn setActiveProfile(self: *Daemon, requested: profile.Profile) sysfs_mod.IoError!void {
+        if (self.sysfs.readFresh()) |current| {
             self.active = current;
-            if (current == requested) return false;
+            if (current == requested) return;
+        } else |err| switch (err) {
+            error.Custom, error.Unknown => {},
+            else => |io| return io,
         }
-
-        const kernel_profile = profile.kernelForDbus(requested);
-
-        self.sysfs.writeProfile(kernel_profile) catch |err| {
-            return mapSysfsError(err);
-        };
-
+        try self.sysfs.write(requested);
         self.active = requested;
+    }
+
+    /// Handles a `platform_profile` change event. Returns whether the cached
+    /// profile changed. Unusable content keeps the cache; a read failure means
+    /// the watch is lost and is returned so the daemon exits and restarts.
+    pub fn checkExternalUpdate(self: *Daemon) sysfs_mod.IoError!bool {
+        const current = self.sysfs.read() catch |err| switch (err) {
+            error.Custom => return self.ignore("ignoring custom platform_profile; keeping cached ActiveProfile"),
+            error.Unknown => return self.ignore("ignoring invalid platform_profile refresh event"),
+            else => |io| return io,
+        };
+        if (current == self.active) return false;
+        self.active = current;
         return true;
     }
 
-    pub fn checkExternalUpdate(self: *Daemon) bool {
-        const current = self.sysfs.checkAndRefreshCurrent() orelse {
-            if (!builtin.is_test) {
-                std.log.warn("ignoring invalid platform_profile refresh event", .{});
-            }
-            return false;
-        };
-        switch (current) {
-            .supported => |kernel_profile| {
-                const new_active = profile.dbusForKernel(kernel_profile);
-                if (new_active != self.active) {
-                    self.active = new_active;
-                    return true;
-                }
-                return false;
-            },
-            .custom => {
-                if (!builtin.is_test) {
-                    std.log.warn("ignoring custom platform_profile; keeping cached ActiveProfile", .{});
-                }
-                return false;
-            },
-        }
-    }
-
-    pub fn pollFd(self: *Daemon) std.os.linux.fd_t {
-        return self.sysfs.pollFd();
+    fn ignore(_: *Daemon, comptime message: []const u8) bool {
+        if (!builtin.is_test) std.log.warn(message, .{});
+        return false;
     }
 };
 
-fn mapSysfsError(err: sysfs_mod.Error) Error {
-    return switch (err) {
-        error.UnsupportedPlatform => Error.UnsupportedPlatform,
-        error.UnknownKernelProfile => Error.UnknownKernelProfile,
-        error.PermissionDenied => Error.PermissionDenied,
-        error.WriteFailed => Error.WriteFailed,
-        error.ReadFailed => Error.ReadFailed,
-    };
+const max_path = std.Io.Dir.max_path_bytes;
+
+/// A temp `platform_profile` holding `contents`, with a daemon opened on it
+/// when `contents` is a valid profile.
+fn tempFile(tmp: *std.testing.TmpDir, buf: []u8, contents: []const u8) ![:0]const u8 {
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = contents });
+    return testutil.tmpPath(tmp.dir, "p", buf);
 }
 
-fn writeTempProfile(path_buf: []u8, comptime name: []const u8, contents: []const u8) ![:0]const u8 {
-    const path = try std.mem.printSentinel(path_buf, "/tmp/platform-profile-daemon-daemon-test-" ++ name ++ "-{d}", .{testutil.pid()}, 0);
-    try overwriteProfile(path, contents);
-    return path;
+fn expectFile(tmp: *std.testing.TmpDir, expected: []const u8) !void {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(expected, try tmp.dir.readFile(std.testing.io, "p", &buf));
 }
 
-fn overwriteProfile(path: [:0]const u8, contents: []const u8) !void {
-    const fd = try testutil.createFile(path.ptr);
-    defer testutil.close(fd);
-    try testutil.writeBytes(fd, contents);
+test "init primes the cache and rejects unusable startup content" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [max_path]u8 = undefined;
+
+    const daemon = try Daemon.init(try tempFile(&tmp, &buf, "performance\n"));
+    defer daemon.deinit();
+    try std.testing.expectEqual(profile.Profile.performance, daemon.active);
+
+    try std.testing.expectError(error.Custom, Daemon.init(try tempFile(&tmp, &buf, "custom\n")));
+    try std.testing.expectError(error.Unknown, Daemon.init(try tempFile(&tmp, &buf, "quiet\n")));
+    try std.testing.expectError(error.Unknown, Daemon.init(try tempFile(&tmp, &buf, "")));
+    try std.testing.expectError(error.Unknown, Daemon.init(try tempFile(&tmp, &buf, "balanced \n")));
+    try expectFile(&tmp, "balanced \n");
+    try std.testing.expectError(error.UnsupportedPlatform, Daemon.init("/nonexistent/platform_profile"));
 }
 
-test "watch propagates setup failure" {
-    var path_buf: [128]u8 = undefined;
-    const path = try std.mem.printSentinel(&path_buf, "/tmp/platform-profile-daemon-watch-missing-{d}", .{testutil.pid()}, 0);
-    testutil.unlink(path.ptr);
-    defer testutil.unlink(path.ptr);
-
-    var daemon = Daemon.init(path);
+test "requesting the current profile skips the write" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [max_path]u8 = undefined;
+    // No trailing newline: a write would add one.
+    var daemon = try Daemon.init(try tempFile(&tmp, &buf, "balanced"));
     defer daemon.deinit();
 
-    try std.testing.expectError(Error.UnsupportedPlatform, daemon.watch());
-    try std.testing.expectEqual(@as(std.os.linux.fd_t, -1), daemon.pollFd());
+    try daemon.setActiveProfile(.balanced);
+    try expectFile(&tmp, "balanced");
+    try std.testing.expectEqual(profile.Profile.balanced, daemon.active);
 }
 
-test "setting same profile after refresh skips sysfs write" {
-    var path_buf: [128]u8 = undefined;
-    const path = try writeTempProfile(&path_buf, "same", "balanced\n");
-    defer testutil.unlink(path.ptr);
-
-    var daemon = Daemon.init(path);
-    try daemon.refresh();
-    try std.testing.expectEqual(false, try daemon.setActiveProfile(.balanced));
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
-}
-
-test "stale cached active profile does not skip write" {
-    var path_buf: [128]u8 = undefined;
-    const path = try writeTempProfile(&path_buf, "stale", "performance\n");
-    defer testutil.unlink(path.ptr);
-
-    var daemon = Daemon.init(path);
-    daemon.active = .balanced;
-    try std.testing.expectEqual(true, try daemon.setActiveProfile(.balanced));
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
-
-    const sysfs = sysfs_mod.Sysfs.init(path);
-    try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
-}
-
-test "unknown current kernel profile still allows write" {
-    var path_buf: [128]u8 = undefined;
-    const path = try writeTempProfile(&path_buf, "unknown", "quiet\n");
-    defer testutil.unlink(path.ptr);
-
-    var daemon = Daemon.init(path);
-    try std.testing.expectEqual(true, try daemon.setActiveProfile(.balanced));
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
-
-    const sysfs = sysfs_mod.Sysfs.init(path);
-    try std.testing.expectEqual(profile.KernelProfile.balanced, try sysfs.readCurrent());
-}
-
-test "custom startup profile fails without writing" {
-    var path_buf: [128]u8 = undefined;
-    const path = try writeTempProfile(&path_buf, "custom", "custom\n");
-    defer testutil.unlink(path.ptr);
-
-    var daemon = Daemon.init(path);
-    try std.testing.expectError(Error.UnknownKernelProfile, daemon.refresh());
-    try std.testing.expectEqualStrings("", daemon.activeName());
-
-    const sysfs = sysfs_mod.Sysfs.init(path);
-    try std.testing.expectEqual(sysfs_mod.CurrentProfile.custom, try sysfs.readCurrentProfile());
-}
-
-test "custom refresh failure preserves cached profile" {
-    var path_buf: [128]u8 = undefined;
-    const sealed = try sealedCustomProfilePath(&path_buf);
-    defer testutil.close(sealed.fd);
-
-    var daemon = Daemon.init(sealed.path);
-    daemon.active = .performance;
-
-    try std.testing.expectError(Error.UnknownKernelProfile, daemon.refresh());
-    try std.testing.expectEqualStrings("performance", daemon.activeName());
-}
-
-test "custom external refresh preserves cache and explicit same cached profile converges" {
-    var path_buf: [128]u8 = undefined;
-    const path = try writeTempProfile(&path_buf, "refresh-custom", "performance\n");
-    defer testutil.unlink(path.ptr);
-
-    var daemon = Daemon.init(path);
+test "stale cache does not skip the write" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [max_path]u8 = undefined;
+    var daemon = try Daemon.init(try tempFile(&tmp, &buf, "balanced\n"));
     defer daemon.deinit();
-    try daemon.refresh();
-    try daemon.sysfs.watch();
-    try std.testing.expectEqualStrings("performance", daemon.activeName());
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = "performance\n" });
 
-    try overwriteProfile(path, "custom\n");
-
-    try std.testing.expectEqual(false, daemon.checkExternalUpdate());
-    try std.testing.expectEqualStrings("performance", daemon.activeName());
-
-    const sysfs = sysfs_mod.Sysfs.init(path);
-    try std.testing.expectEqual(sysfs_mod.CurrentProfile.custom, try sysfs.readCurrentProfile());
-    try std.testing.expectEqual(true, try daemon.setActiveProfile(.performance));
-    try std.testing.expectEqual(profile.KernelProfile.performance, try sysfs.readCurrent());
+    try daemon.setActiveProfile(.balanced);
+    try expectFile(&tmp, "balanced\n");
+    try std.testing.expectEqual(profile.Profile.balanced, daemon.active);
 }
 
-test "custom external refresh on sealed file preserves cached profile" {
-    var path_buf: [128]u8 = undefined;
-    const sealed = try sealedCustomProfilePath(&path_buf);
-    defer testutil.close(sealed.fd);
-
-    var daemon = Daemon.init(sealed.path);
+test "request matching the kernel but not the cache moves the cache without writing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [max_path]u8 = undefined;
+    var daemon = try Daemon.init(try tempFile(&tmp, &buf, "balanced\n"));
     defer daemon.deinit();
-    daemon.active = .performance;
-    try daemon.sysfs.watch();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = "performance" });
 
-    try std.testing.expectEqual(false, daemon.checkExternalUpdate());
-    try std.testing.expectEqualStrings("performance", daemon.activeName());
+    const before = daemon.active;
+    try daemon.setActiveProfile(.performance);
+    // The visible value changed, so the caller must signal it.
+    try std.testing.expect(daemon.active != before);
+    try expectFile(&tmp, "performance");
 }
 
-test "custom external refresh from balanced reports no visible change" {
-    var path_buf: [128]u8 = undefined;
-    const path = try writeTempProfile(&path_buf, "refresh-custom-balanced", "balanced\n");
-    defer testutil.unlink(path.ptr);
-
-    var daemon = Daemon.init(path);
+test "custom or unknown kernel state still accepts an explicit request" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [max_path]u8 = undefined;
+    var daemon = try Daemon.init(try tempFile(&tmp, &buf, "performance\n"));
     defer daemon.deinit();
-    try daemon.refresh();
-    try daemon.sysfs.watch();
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
 
-    try overwriteProfile(path, "custom\n");
-
-    try std.testing.expectEqual(false, daemon.checkExternalUpdate());
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
-
-    const sysfs = sysfs_mod.Sysfs.init(path);
-    try std.testing.expectEqual(sysfs_mod.CurrentProfile.custom, try sysfs.readCurrentProfile());
+    for ([_][]const u8{ "custom\n", "quiet\n" }) |state| {
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = state });
+        // Same as the cache, yet the kernel must still converge.
+        try daemon.setActiveProfile(.performance);
+        try expectFile(&tmp, "performance\n");
+    }
 }
 
-test "invalid external refresh keeps cached profile unchanged and reports no change" {
-    var path_buf: [128]u8 = undefined;
-    const path = try writeTempProfile(&path_buf, "refresh-invalid", "balanced\n");
-    defer testutil.unlink(path.ptr);
+test "failed write after a cache refresh keeps the refreshed cache" {
+    const sys = @import("sys.zig");
+    const fd = testutil.memfd("daemon-test") catch return error.SkipZigTest;
+    defer sys.close(fd);
+    var errno: std.os.linux.E = .SUCCESS;
+    try sys.writeAll(fd, "performance\n", &errno);
+    if (!testutil.addSeals(fd, std.os.linux.F.SEAL_WRITE)) return error.SkipZigTest;
+    var path_buf: [64]u8 = undefined;
+    const path = try std.mem.printSentinel(&path_buf, "/proc/self/fd/{d}", .{fd}, 0);
 
-    var daemon = Daemon.init(path);
+    var daemon: Daemon = .{ .sysfs = .{ .path = path, .fd = -1 }, .active = .balanced };
+    // The fresh read succeeds and moves the cache; the sealed file then refuses the write.
+    try std.testing.expectError(error.PermissionDenied, daemon.setActiveProfile(.power_saver));
+    // Callers compare `active` before and after, so this visible change is still signalled.
+    try std.testing.expectEqual(profile.Profile.performance, daemon.active);
+}
+
+test "external updates report change once" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [max_path]u8 = undefined;
+    var daemon = try Daemon.init(try tempFile(&tmp, &buf, "balanced\n"));
     defer daemon.deinit();
-    try daemon.refresh();
-    try daemon.sysfs.watch();
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
 
-    try overwriteProfile(path, "");
-
-    try std.testing.expectEqual(false, daemon.checkExternalUpdate());
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
+    try std.testing.expectEqual(false, try daemon.checkExternalUpdate());
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = "low-power\n" });
+    try std.testing.expectEqual(true, try daemon.checkExternalUpdate());
+    try std.testing.expectEqual(profile.Profile.power_saver, daemon.active);
+    try std.testing.expectEqual(false, try daemon.checkExternalUpdate());
 }
 
-fn sealedCustomProfilePath(path_buf: []u8) !struct { fd: std.os.linux.fd_t, path: [:0]const u8 } {
-    const linux = std.os.linux;
-    const fd = testutil.memfd("platform-profile-daemon-test") catch return error.SkipZigTest;
-    errdefer testutil.close(fd);
-
-    try testutil.writeBytes(fd, "custom\n");
-    try std.testing.expect(linux.errno(linux.lseek(fd, 0, 0)) == .SUCCESS);
-
-    const seals = linux.F.SEAL_WRITE | linux.F.SEAL_SHRINK | linux.F.SEAL_GROW | linux.F.SEAL_SEAL;
-    if (!testutil.addSeals(fd, seals)) return error.SkipZigTest;
-
-    const path = try std.mem.printSentinel(path_buf, "/proc/self/fd/{d}", .{fd}, 0);
-    return .{ .fd = fd, .path = path };
-}
-
-test "malformed external refresh keeps cached profile unchanged and reports no change" {
-    var path_buf: [128]u8 = undefined;
-    const path = try writeTempProfile(&path_buf, "refresh-malformed", "balanced\n");
-    defer testutil.unlink(path.ptr);
-
-    var daemon = Daemon.init(path);
+test "custom, malformed and empty external content keep the cache" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [max_path]u8 = undefined;
+    var daemon = try Daemon.init(try tempFile(&tmp, &buf, "performance\n"));
     defer daemon.deinit();
-    try daemon.refresh();
-    try daemon.sysfs.watch();
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
 
-    try overwriteProfile(path, "quiet\n");
+    for ([_][]const u8{ "custom\n", "quiet\n", "", "balanced \n", "\n" }) |content| {
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = content });
+        try std.testing.expectEqual(false, try daemon.checkExternalUpdate());
+        try std.testing.expectEqual(profile.Profile.performance, daemon.active);
+    }
+}
 
-    try std.testing.expectEqual(false, daemon.checkExternalUpdate());
-    try std.testing.expectEqualStrings("balanced", daemon.activeName());
+test "a read failure on the watch fd is returned, not swallowed" {
+    var fds: [2]std.os.linux.fd_t = undefined;
+    try std.testing.expect(std.os.linux.errno(std.os.linux.pipe2(&fds, .{ .CLOEXEC = true })) == .SUCCESS);
+    defer @import("sys.zig").close(fds[1]);
+
+    // pread on a pipe fails with ESPIPE.
+    var daemon: Daemon = .{ .sysfs = .{ .path = "/unused", .fd = fds[0] }, .active = .balanced };
+    defer daemon.deinit();
+    try std.testing.expectError(error.ReadFailed, daemon.checkExternalUpdate());
+    try std.testing.expectEqual(profile.Profile.balanced, daemon.active);
 }

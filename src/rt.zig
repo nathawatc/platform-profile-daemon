@@ -4,6 +4,7 @@
 //! stack unwinding, debug-info loading and `std.Io.Threaded`. Everything here
 //! is a raw `write(2)` to a file descriptor.
 const std = @import("std");
+const sys = @import("sys.zig");
 const linux = std.os.linux;
 
 pub const std_options: std.Options = .{
@@ -17,18 +18,8 @@ pub const std_options: std.Options = .{
 
 /// Best-effort write of all bytes. Errors are ignored: this only reports.
 pub fn writeFd(fd: linux.fd_t, bytes: []const u8) void {
-    var rest = bytes;
-    while (rest.len > 0) {
-        const rc = linux.write(fd, rest.ptr, rest.len);
-        switch (linux.errno(rc)) {
-            .SUCCESS => {
-                if (rc == 0) return;
-                rest = rest[rc..];
-            },
-            .INTR => {},
-            else => return,
-        }
-    }
+    var errno: linux.E = .SUCCESS;
+    sys.writeAll(fd, bytes, &errno) catch {};
 }
 
 pub fn writeStdout(bytes: []const u8) void {

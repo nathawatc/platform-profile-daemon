@@ -48,9 +48,8 @@ validating on a target machine.
 Run before submitting changes:
 
 ```sh
-zig build test
+zig build test                      # includes the zig fmt check
 zig build -Doptimize=ReleaseFast
-zig fmt --check build.zig build.zig.zon src/*.zig
 bash tools/check-install.sh zig-out
 bash tools/init-smoke.sh
 ```

@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
     const strip = b.option(bool, "strip", "Strip debug symbols") orelse (optimize != .debug);
 
     const exe = addRuntime(b, "platform-profile-daemon", "src/main.zig", target, optimize, strip);
-    configureDaemon(b, exe.root_module);
+    addBuildOptions(b, exe.root_module);
     b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
         .dest_dir = .{ .override = .lib },
     }).step);
@@ -34,10 +34,14 @@ pub fn build(b: *std.Build) void {
             .optimize = test_optimize,
         }),
     });
-    configureDaemon(b, tests.root_module);
+    addBuildOptions(b, tests.root_module);
 
     const run_tests = b.addRunArtifact(tests);
-    const test_step = b.step("test", "Run tests");
+    const test_step = b.step("test", "Check formatting and run tests");
+    test_step.dependOn(&b.addFmt(.{
+        .paths = b.pathList(&.{ "src", "build.zig", "build.zig.zon" }),
+        .check = true,
+    }).step);
     test_step.dependOn(&run_tests.step);
     const init_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/init.zig"),
@@ -82,7 +86,7 @@ fn addRuntime(
     return exe;
 }
 
-fn configureDaemon(b: *std.Build, module: *std.Build.Module) void {
+fn addBuildOptions(b: *std.Build, module: *std.Build.Module) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", zon.version);
     module.addOptions("build_options", options);
