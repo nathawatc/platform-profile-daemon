@@ -11,7 +11,7 @@ const daemon_mod = @import("daemon.zig");
 const profile_mod = @import("profile.zig");
 
 comptime {
-    if (builtin.cpu.arch.endian() != .little) @compileError("dbus.zig assumes a little-endian host");
+    if (builtin.target.cpu.arch.endian() != .little) @compileError("dbus.zig assumes a little-endian host");
 }
 
 const bus_name = "org.freedesktop.UPower.PowerProfiles";
@@ -352,7 +352,7 @@ const Message = struct {
 
 /// Total length of the message that starts with `h`, or null if the header is unusable.
 fn frameLength(h: *const [header_len]u8) ?usize {
-    const endian: std.builtin.Endian = switch (h[0]) {
+    const endian: std.lang.Endian = switch (h[0]) {
         'l' => .little,
         'B' => .big,
         else => return null,
@@ -419,21 +419,21 @@ fn parseMessage(buf: []const u8) ?Message {
 fn nowMs() i64 {
     var ts: linux.timespec = undefined;
     // Raw syscall: only called while awaiting Polkit, so skip std's vDSO lookup code.
-    _ = linux.syscall2(.clock_gettime, @intFromEnum(linux.clockid_t.MONOTONIC), @intFromPtr(&ts));
+    _ = linux.syscall2(.clock_gettime, @backingInt(linux.clockid_t.MONOTONIC), @intFromPtr(&ts));
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
 }
 
 /// `bus_address` is the value of `DBUS_SYSTEM_BUS_ADDRESS`, if set.
 fn connectBus(bus_address: ?[]const u8) !linux.fd_t {
     var address: []const u8 = bus_address orelse default_bus_address;
-    if (std.mem.indexOfScalar(u8, address, ';')) |end| address = address[0..end];
+    if (std.mem.findScalar(u8, address, ';')) |end| address = address[0..end];
     if (!std.mem.startsWith(u8, address, "unix:")) return error.UnsupportedBusAddress;
 
     var sa: SockaddrUn = .{};
     var addr_len: usize = 0;
     var params = std.mem.splitScalar(u8, address["unix:".len..], ',');
     while (params.next()) |param| {
-        const eq = std.mem.indexOfScalar(u8, param, '=') orelse continue;
+        const eq = std.mem.findScalar(u8, param, '=') orelse continue;
         const key = param[0..eq];
         const value = param[eq + 1 ..];
         if (value.len == 0 or value.len >= sa.path.len) continue;
@@ -572,7 +572,7 @@ const Bus = struct {
     fn handshake(self: *Bus) !void {
         // SASL EXTERNAL with our effective uid as hex-encoded decimal text.
         var uid_text: [16]u8 = undefined;
-        const uid = std.fmt.bufPrint(&uid_text, "{d}", .{linux.geteuid()}) catch unreachable;
+        const uid = std.mem.print(&uid_text, "{d}", .{linux.geteuid()}) catch unreachable;
         var line: [64]u8 = undefined;
         var w: Writer = .{ .buf = &line };
         try w.putRaw("\x00AUTH EXTERNAL ");
@@ -581,7 +581,7 @@ const Bus = struct {
         try w.putRaw("\r\n");
         try self.sendAll(w.bytes());
 
-        while (std.mem.indexOf(u8, self.rbuf[0..self.rlen], "\r\n") == null) {
+        while (std.mem.find(u8, self.rbuf[0..self.rlen], "\r\n") == null) {
             if (self.rlen == self.rbuf.len) return error.AuthFailed;
             try self.recvSome();
         }
@@ -877,7 +877,7 @@ const Bus = struct {
 };
 
 fn denial(buf: []u8, reason: []const u8) []const u8 {
-    return std.fmt.bufPrint(buf, "polkit authorization failed: {s}", .{utf8Prefix(reason, 160)}) catch
+    return std.mem.print(buf, "polkit authorization failed: {s}", .{utf8Prefix(reason, 160)}) catch
         "polkit authorization failed";
 }
 
@@ -1120,8 +1120,8 @@ test "Introspect lists the retained properties only" {
     const xml = try r.getStr();
     for (prop_table) |entry| {
         var needle: [64]u8 = undefined;
-        const text = try std.fmt.bufPrint(&needle, "<property name=\"{s}\"", .{entry.name});
-        try std.testing.expect(std.mem.indexOf(u8, xml, text) != null);
+        const text = try std.mem.print(&needle, "<property name=\"{s}\"", .{entry.name});
+        try std.testing.expect(std.mem.find(u8, xml, text) != null);
     }
-    try std.testing.expect(std.mem.indexOf(u8, xml, "HoldProfile") == null);
+    try std.testing.expect(std.mem.find(u8, xml, "HoldProfile") == null);
 }

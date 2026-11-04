@@ -42,7 +42,7 @@ fn initialize(profilePath: [:0]const u8, cpuPath: [:0]const u8) !void {
             const name = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(&entry.name)), 0);
             if (!isPolicyName(name)) continue;
             foundPolicy = true;
-            var pathBuf: [std.fs.max_path_bytes]u8 = undefined;
+            var pathBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
             const path = std.mem.printSentinel(&pathBuf, "{s}/{s}/energy_performance_preference", .{ cpuPath, name }, 0) catch |e| {
                 return failure(cpuPath, e, .SUCCESS);
             };
@@ -100,7 +100,7 @@ fn failure(path: []const u8, err: anyerror, errno: linux.E) anyerror {
 }
 
 fn testPath(dir: std.Io.Dir, name: []const u8, buf: []u8) ![:0]const u8 {
-    var root: [std.fs.max_path_bytes]u8 = undefined;
+    var root: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try dir.realPath(std.testing.io, &root);
     return std.mem.printSentinel(buf, "{s}/{s}", .{ root[0..n], name }, 0);
 }
@@ -108,7 +108,7 @@ fn testPath(dir: std.Io.Dir, name: []const u8, buf: []u8) ![:0]const u8 {
 fn seedPolicy(dir: std.Io.Dir, name: []const u8) !void {
     try dir.createDirPath(std.testing.io, name);
     var buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrint(&buf, "{s}/energy_performance_preference", .{name});
+    const path = try std.mem.print(&buf, "{s}/energy_performance_preference", .{name});
     try dir.writeFile(std.testing.io, .{ .sub_path = path, .data = "default\n" });
 }
 
@@ -127,15 +127,15 @@ test "initial supported profiles enable every policy and reapply saved profile" 
         try seedPolicy(tmp.dir, "policy2");
         try seedPolicy(tmp.dir, "policy10");
         try tmp.dir.createDirPath(std.testing.io, "policy-other");
-        var profileBuf: [std.fs.max_path_bytes]u8 = undefined;
-        var cpuBuf: [std.fs.max_path_bytes]u8 = undefined;
+        var profileBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var cpuBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try initialize(try testPath(tmp.dir, "profile", &profileBuf), try testPath(tmp.dir, ".", &cpuBuf));
         for ([_][]const u8{ "policy0", "policy2", "policy10" }) |name| {
             var path: [128]u8 = undefined;
-            try expectFile(tmp.dir, try std.fmt.bufPrint(&path, "{s}/energy_performance_preference", .{name}), "dynamic\n");
+            try expectFile(tmp.dir, try std.mem.print(&path, "{s}/energy_performance_preference", .{name}), "dynamic\n");
         }
         var expected: [32]u8 = undefined;
-        try expectFile(tmp.dir, "profile", try std.fmt.bufPrint(&expected, "{s}\n", .{initial}));
+        try expectFile(tmp.dir, "profile", try std.mem.print(&expected, "{s}\n", .{initial}));
     }
 }
 
@@ -145,8 +145,8 @@ test "unsupported initial profiles fail before any writes" {
         defer tmp.cleanup();
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "profile", .data = initial });
         try seedPolicy(tmp.dir, "policy0");
-        var profileBuf: [std.fs.max_path_bytes]u8 = undefined;
-        var cpuBuf: [std.fs.max_path_bytes]u8 = undefined;
+        var profileBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var cpuBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try std.testing.expectError(error.UnknownKernelProfile, initialize(try testPath(tmp.dir, "profile", &profileBuf), try testPath(tmp.dir, ".", &cpuBuf)));
         try expectFile(tmp.dir, "profile", initial);
         try expectFile(tmp.dir, "policy0/energy_performance_preference", "default\n");
@@ -156,8 +156,8 @@ test "unsupported initial profiles fail before any writes" {
 test "missing profile or no policies fails" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    var profileBuf: [std.fs.max_path_bytes]u8 = undefined;
-    var cpuBuf: [std.fs.max_path_bytes]u8 = undefined;
+    var profileBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var cpuBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const profilePath = try testPath(tmp.dir, "profile", &profileBuf);
     const cpuPath = try testPath(tmp.dir, ".", &cpuBuf);
     try std.testing.expectError(error.OpenFailed, initialize(profilePath, cpuPath));
@@ -179,15 +179,15 @@ test "failed policy stops initialization with no rollback or reapplication" {
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "profile", .data = "performance" });
         for (policies) |name| try seedPolicy(tmp.dir, name);
         var failedBuf: [128]u8 = undefined;
-        const failedPath = try std.fmt.bufPrint(&failedBuf, "{s}/energy_performance_preference", .{failed});
+        const failedPath = try std.mem.print(&failedBuf, "{s}/energy_performance_preference", .{failed});
         try tmp.dir.deleteFile(std.testing.io, failedPath);
-        var profileBuf: [std.fs.max_path_bytes]u8 = undefined;
-        var cpuBuf: [std.fs.max_path_bytes]u8 = undefined;
+        var profileBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var cpuBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try std.testing.expectError(error.OpenFailed, initialize(try testPath(tmp.dir, "profile", &profileBuf), try testPath(tmp.dir, ".", &cpuBuf)));
         for (policies) |name| {
             if (std.mem.eql(u8, name, failed)) continue;
             var pathBuf: [128]u8 = undefined;
-            const path = try std.fmt.bufPrint(&pathBuf, "{s}/energy_performance_preference", .{name});
+            const path = try std.mem.print(&pathBuf, "{s}/energy_performance_preference", .{name});
             var contents: [32]u8 = undefined;
             const value = try tmp.dir.readFile(std.testing.io, path, &contents);
             if (std.mem.eql(u8, value, "dynamic\n")) {
@@ -213,7 +213,7 @@ test "reapply failure leaves initialized policies and fails" {
         try std.testing.expect(testutil.addSeals(fd, seals));
         var profileBuf: [128]u8 = undefined;
         const profilePath = try std.mem.printSentinel(&profileBuf, "/proc/self/fd/{d}", .{fd}, 0);
-        var cpuBuf: [std.fs.max_path_bytes]u8 = undefined;
+        var cpuBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try std.testing.expectError(if (failOpen) error.OpenFailed else error.PermissionDenied, initialize(profilePath, try testPath(tmp.dir, ".", &cpuBuf)));
         try expectFile(tmp.dir, "policy0/energy_performance_preference", "dynamic\n");
     }
@@ -225,7 +225,7 @@ test "symlinked policies and EPP attributes fail without following them" {
         defer tmp.cleanup();
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "profile", .data = "balanced" });
         try seedPolicy(tmp.dir, "target");
-        var linkBuf: [std.fs.max_path_bytes]u8 = undefined;
+        var linkBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         if (attribute) {
             try tmp.dir.createDirPath(std.testing.io, "policy0");
             const link = try testPath(tmp.dir, "policy0/energy_performance_preference", &linkBuf);
@@ -234,8 +234,8 @@ test "symlinked policies and EPP attributes fail without following them" {
             const link = try testPath(tmp.dir, "policy0", &linkBuf);
             try std.testing.expect(linux.errno(linux.symlink("target", link.ptr)) == .SUCCESS);
         }
-        var profileBuf: [std.fs.max_path_bytes]u8 = undefined;
-        var cpuBuf: [std.fs.max_path_bytes]u8 = undefined;
+        var profileBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var cpuBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         try std.testing.expectError(error.OpenFailed, initialize(try testPath(tmp.dir, "profile", &profileBuf), try testPath(tmp.dir, ".", &cpuBuf)));
         try expectFile(tmp.dir, "target/energy_performance_preference", "default\n");
         try expectFile(tmp.dir, "profile", "balanced");
@@ -252,15 +252,15 @@ test "initialization I/O reads profile once then writes policies before profile 
     try std.testing.expect(linux.errno(inotify_rc) == .SUCCESS);
     const fd: linux.fd_t = @intCast(inotify_rc);
     defer testutil.close(fd);
-    var pathBuf: [std.fs.max_path_bytes]u8 = undefined;
+    var pathBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var watches: [3]c_int = undefined;
     for ([_][]const u8{ "profile", "policy0/energy_performance_preference", "policy1/energy_performance_preference" }, 0..) |path, i| {
         const watch_rc = linux.inotify_add_watch(fd, (try testPath(tmp.dir, path, &pathBuf)).ptr, linux.IN.ACCESS | linux.IN.CLOSE_WRITE);
         try std.testing.expect(linux.errno(watch_rc) == .SUCCESS);
         watches[i] = @intCast(watch_rc);
     }
-    var profileBuf: [std.fs.max_path_bytes]u8 = undefined;
-    var cpuBuf: [std.fs.max_path_bytes]u8 = undefined;
+    var profileBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var cpuBuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     try initialize(try testPath(tmp.dir, "profile", &profileBuf), try testPath(tmp.dir, ".", &cpuBuf));
     var events: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
     const n = linux.read(fd, &events, events.len);
@@ -277,7 +277,7 @@ test "initialization I/O reads profile once then writes policies before profile 
             reads += 1;
         }
         if (event.mask & linux.IN.CLOSE_WRITE != 0) {
-            const index = std.mem.indexOfScalar(c_int, &watches, event.wd) orelse return error.UnexpectedWatch;
+            const index = std.mem.findScalar(c_int, &watches, event.wd) orelse return error.UnexpectedWatch;
             try std.testing.expect(!written[index]);
             if (index == 0) try std.testing.expectEqual(@as(usize, 2), writes);
             written[index] = true;
