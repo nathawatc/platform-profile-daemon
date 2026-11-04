@@ -418,7 +418,8 @@ fn parseMessage(buf: []const u8) ?Message {
 
 fn nowMs() i64 {
     var ts: linux.timespec = undefined;
-    _ = linux.clock_gettime(.MONOTONIC, &ts);
+    // Raw syscall: only called while awaiting Polkit, so skip std's vDSO lookup code.
+    _ = linux.syscall2(.clock_gettime, @intFromEnum(linux.clockid_t.MONOTONIC), @intFromPtr(&ts));
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
 }
 
