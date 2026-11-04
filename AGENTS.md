@@ -202,7 +202,6 @@ a fresh open so they never depend on the watch fd's state.
 - A failed watch read is logged and retried on the next wake. The third
   consecutive failure means the watch is lost: the daemon exits so systemd
   restarts it. Any successful read, or unusable content, resets the count.
-- The watch fd is also serviced while a Polkit reply is awaited.
 - Handlers announce `PropertiesChanged` whenever the cached profile differs
   before and after an operation, including when it then fails. The method
   reply is sent first so a failed signal cannot swallow it.
@@ -232,8 +231,13 @@ D-Bus type
 profile value
 ```
 
-Invalid input must not trigger Polkit and must not emit change signals. Only
-one `Set` may await authorization at a time; others fail immediately.
+Invalid input must not trigger Polkit and must not emit change signals.
+
+Polkit is asked without blocking: a validated `Set` takes a slot in a fixed
+table (`max_pending`, 8) and the main loop keeps serving the bus and the
+profile watch. Verdicts are applied in the order they arrive, each reading the
+kernel fresh; an unanswered request is denied after 25 s; a ninth concurrent
+`Set` fails immediately. Do not reintroduce a nested blocking wait.
 
 Do not add compatibility stubs for unsupported members without a demonstrated
 desktop/widget compatibility need.

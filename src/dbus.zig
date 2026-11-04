@@ -38,6 +38,8 @@ const err_read_only = "org.freedesktop.DBus.Error.PropertyReadOnly";
 
 const name_flag_do_not_queue: u32 = 4;
 const call_timeout_ms: i64 = 25_000;
+/// Profile changes that may await Polkit at once.
+const max_pending = 8;
 
 const POLLIN: i16 = linux.POLL.IN;
 const POLLPRI: i16 = linux.POLL.PRI;
@@ -105,62 +107,87 @@ const introspection_xml: []const u8 = blk: {
     break :blk &final;
 };
 
-/// Explicit because message dispatch and Polkit waiting call each other.
 const ServeError = error{ NoSpace, SendFailed, RecvFailed, Closed, PollFailed, Protocol, Timeout, WatchLost };
 
 fn nowMs() i64 {
     var ts: linux.timespec = undefined;
-    // Raw syscall: only called while awaiting Polkit, so skip std's vDSO lookup code.
+    // Raw syscall: skip std's vDSO lookup code.
     _ = linux.syscall2(.clock_gettime, @backingInt(linux.clockid_t.MONOTONIC), @intFromPtr(&ts));
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
 }
+
+/// `poll(2)` on the bus socket and the profile watch fd. A parameter of
+/// `serveOnce` so tests can report events a regular file never raises.
+fn rawPoll(fds: *[2]linux.pollfd, timeout_ms: i32) usize {
+    return linux.poll(fds, 2, timeout_ms);
+}
+
+/// A profile change waiting for Polkit: everything needed to answer the
+/// original call once the verdict arrives.
+const Pending = struct {
+    polkit_serial: u32,
+    deadline_ms: i64,
+    call_serial: u32,
+    call_flags: u8,
+    sender: [255]u8,
+    sender_len: u8,
+    requested: profile_mod.Profile,
+
+    /// The original call, as far as replies need it.
+    fn call(self: *const Pending) wire.Message {
+        return .{
+            .kind = wire.msg_method_call,
+            .flags = self.call_flags,
+            .serial = self.call_serial,
+            .sender = self.sender[0..self.sender_len],
+        };
+    }
+};
 
 const Bus = struct {
     t: transport.Transport,
     daemon: *Daemon,
     out: [8192]u8 = undefined,
-    authorizing: bool = false,
+    /// Entries are valid only where `pending_mask` has the bit set. Kept apart
+    /// so the default `Bus` value stays tiny: a default array of entries
+    /// would be emitted into `.rodata`.
+    pending: [max_pending]Pending = undefined,
+    pending_mask: u8 = 0,
 
     fn writer(self: *Bus) wire.Writer {
         return .{ .buf = &self.out };
     }
 
-    /// Dispatches every complete buffered frame. If `awaited` is given and its
-    /// reply arrives, returns it instead of dispatching; the reply stays valid
-    /// until the next frame is read.
-    fn pump(self: *Bus, awaited: ?u32) ServeError!?wire.Message {
+    /// Dispatches every complete buffered frame: Polkit verdicts complete
+    /// their pending change, method calls are handled, the rest is ignored.
+    fn pump(self: *Bus) ServeError!void {
         while (try self.t.nextFrame()) |frame| {
             const m = wire.parseMessage(frame) orelse continue;
-            if (awaited) |serial| {
-                if ((m.kind == wire.msg_method_return or m.kind == wire.msg_error) and m.reply_serial == serial) return m;
+            if (m.kind == wire.msg_method_return or m.kind == wire.msg_error) {
+                if (self.findPending(m.reply_serial)) |i| try self.finishAuthorization(i, m);
+                continue;
             }
             try self.handle(m);
         }
-        return null;
     }
 
-    fn waitReply(self: *Bus, serial: u32) ServeError!wire.Message {
-        const deadline = nowMs() + call_timeout_ms;
-        while (true) {
-            if (try self.pump(serial)) |reply| return reply;
-            const left = deadline - nowMs();
-            if (left <= 0) return error.Timeout;
-            // Keep serving profile changes made elsewhere (e.g. a firmware
-            // hotkey) while a user sits at an authentication prompt.
-            var fds = [2]linux.pollfd{
-                .{ .fd = self.t.fd, .events = POLLIN, .revents = 0 },
-                .{ .fd = self.daemon.sysfs.fd, .events = watch_events, .revents = 0 },
-            };
-            const rc = linux.poll(&fds, 2, @intCast(left));
-            switch (linux.errno(rc)) {
-                .SUCCESS => {},
-                .INTR => continue,
-                else => return error.PollFailed,
-            }
-            if (rc == 0) return error.Timeout;
-            if (fds[0].revents != 0) try self.t.recv();
-            if (fds[1].revents & watch_ready != 0) try self.serviceWatch();
+    /// One iteration of the service loop: serve buffered frames, time out
+    /// overdue authorizations, then wait for the bus or the profile watch.
+    fn serveOnce(self: *Bus, comptime poll_fn: anytype) ServeError!void {
+        try self.pump();
+        try self.expirePending();
+
+        var fds = [2]linux.pollfd{
+            .{ .fd = self.t.fd, .events = POLLIN, .revents = 0 },
+            .{ .fd = self.daemon.sysfs.fd, .events = watch_events, .revents = 0 },
+        };
+        switch (linux.errno(poll_fn(&fds, self.nextTimeoutMs()))) {
+            .SUCCESS => {},
+            .INTR => return,
+            else => return error.PollFailed,
         }
+        if (fds[0].revents != 0) try self.t.recv();
+        if (fds[1].revents & watch_ready != 0) try self.serviceWatch();
     }
 
     /// Handles a platform_profile change event and announces a visible change.
@@ -173,11 +200,114 @@ const Bus = struct {
         if (changed) try self.emitActiveProfileChanged();
     }
 
-    /// Sends the call in `w` and waits for the reply to `serial`.
+    // -- pending authorizations ---------------------------------------------
+
+    fn isPending(self: *const Bus, i: usize) bool {
+        return self.pending_mask & (@as(u8, 1) << @intCast(i)) != 0;
+    }
+
+    fn setPending(self: *Bus, i: usize, used: bool) void {
+        const bit = @as(u8, 1) << @intCast(i);
+        if (used) self.pending_mask |= bit else self.pending_mask &= ~bit;
+    }
+
+    fn pendingCount(self: *const Bus) usize {
+        return @popCount(self.pending_mask);
+    }
+
+    fn findPending(self: *const Bus, polkit_serial: u32) ?usize {
+        for (0..max_pending) |i| {
+            if (self.isPending(i) and self.pending[i].polkit_serial == polkit_serial) return i;
+        }
+        return null;
+    }
+
+    fn freePending(self: *const Bus) ?usize {
+        for (0..max_pending) |i| {
+            if (!self.isPending(i)) return i;
+        }
+        return null;
+    }
+
+    /// Milliseconds until the earliest authorization deadline, or -1 if none.
+    fn nextTimeoutMs(self: *const Bus) i32 {
+        var earliest: ?i64 = null;
+        for (0..max_pending) |i| {
+            if (!self.isPending(i)) continue;
+            const deadline = self.pending[i].deadline_ms;
+            if (earliest == null or deadline < earliest.?) earliest = deadline;
+        }
+        const deadline = earliest orelse return -1;
+        return @intCast(std.math.clamp(deadline - nowMs(), 0, std.math.maxInt(i32)));
+    }
+
+    /// Answers every authorization whose deadline has passed.
+    fn expirePending(self: *Bus) ServeError!void {
+        const now = nowMs();
+        for (0..max_pending) |i| {
+            if (!self.isPending(i) or self.pending[i].deadline_ms > now) continue;
+            self.setPending(i, false);
+            var buf: [256]u8 = undefined;
+            try self.replyError(self.pending[i].call(), err_access_denied, polkit.failure(&buf, "timed out"));
+        }
+    }
+
+    /// Polkit answered: deny, or apply the change.
+    fn finishAuthorization(self: *Bus, i: usize, verdict: wire.Message) ServeError!void {
+        self.setPending(i, false);
+        const slot = &self.pending[i];
+        const req = slot.call();
+        var denied_buf: [256]u8 = undefined;
+        if (polkit.decide(verdict, &denied_buf)) |denied| {
+            return self.replyError(req, err_access_denied, denied);
+        }
+        try self.applyProfile(req, slot.requested);
+    }
+
+    /// Writes the authorized request and answers the caller.
+    fn applyProfile(self: *Bus, req: wire.Message, requested: profile_mod.Profile) ServeError!void {
+        // The cache can move even when the request then fails (the kernel was
+        // read first), so announce any visible change on both paths. The
+        // caller's answer goes first so a failed signal cannot swallow it.
+        const before = self.daemon.active;
+        const result = self.daemon.setActiveProfile(requested);
+        const changed = self.daemon.active != before;
+        if (result) |_| {
+            try self.replyEmpty(req);
+        } else |err| try switch (err) {
+            error.UnsupportedPlatform => self.replyError(req, err_not_supported, "platform_profile sysfs is unavailable"),
+            error.PermissionDenied => self.replyError(req, err_access_denied, "permission denied writing platform_profile"),
+            error.ReadFailed => self.replyError(req, err_failed, "failed to read platform_profile"),
+            error.WriteFailed => self.replyError(req, err_failed, "failed to write platform_profile"),
+        };
+        if (changed) try self.emitActiveProfileChanged();
+    }
+
+    // -- startup ------------------------------------------------------------
+
+    /// Startup only: sends the call in `w` and waits for its reply. No method
+    /// call can arrive before the name is owned, so nothing is dispatched.
     fn transact(self: *Bus, w: *wire.Writer, serial: u32) ServeError!wire.Message {
         w.finish();
         try self.t.send(w.bytes());
-        return self.waitReply(serial);
+        const deadline = nowMs() + call_timeout_ms;
+        while (true) {
+            while (try self.t.nextFrame()) |frame| {
+                const m = wire.parseMessage(frame) orelse continue;
+                if ((m.kind == wire.msg_method_return or m.kind == wire.msg_error) and m.reply_serial == serial) return m;
+            }
+            const left = deadline - nowMs();
+            if (left <= 0) return error.Timeout;
+            var pfd = [1]linux.pollfd{.{ .fd = self.t.fd, .events = POLLIN, .revents = 0 }};
+            const rc = linux.poll(&pfd, 1, @intCast(left));
+            switch (linux.errno(rc)) {
+                .SUCCESS => {},
+                .INTR => continue,
+                else => return error.PollFailed,
+            }
+            if (rc == 0) return error.Timeout;
+            try self.t.recv();
+        }
     }
 
     /// Authenticates, says Hello, and claims the service name.
@@ -366,56 +496,30 @@ const Bus = struct {
         const requested = profile_mod.Profile.parseDbus(value) orelse
             return self.replyError(m, err_invalid_args, "unsupported profile");
 
-        if (self.authorizing) {
-            return self.replyError(m, err_failed, "another profile change is awaiting authorization");
-        }
         if (m.sender.len == 0 or m.sender.len > 255) {
             return self.replyError(m, err_failed, "failed to resolve D-Bus sender");
         }
+        const i = self.freePending() orelse
+            return self.replyError(m, err_failed, "too many pending profile changes");
 
-        // authorize() services other traffic while waiting, which reuses
-        // the frame buffer; keep a private copy of what the final reply needs.
-        var sender_buf: [255]u8 = undefined;
-        @memcpy(sender_buf[0..m.sender.len], m.sender);
-        var req = m;
-        req.sender = sender_buf[0..m.sender.len];
-
-        var denied_buf: [256]u8 = undefined;
-        if (try self.authorize(req.sender, &denied_buf)) |denied| {
-            return self.replyError(req, err_access_denied, denied);
-        }
-
-        // The cache can move even when the request then fails (the kernel was
-        // read first), so announce any visible change on both paths. The
-        // caller's answer goes first so a failed signal cannot swallow it.
-        const before = self.daemon.active;
-        const result = self.daemon.setActiveProfile(requested);
-        const changed = self.daemon.active != before;
-        if (result) |_| {
-            try self.replyEmpty(req);
-        } else |err| try switch (err) {
-            error.UnsupportedPlatform => self.replyError(req, err_not_supported, "platform_profile sysfs is unavailable"),
-            error.PermissionDenied => self.replyError(req, err_access_denied, "permission denied writing platform_profile"),
-            error.ReadFailed => self.replyError(req, err_failed, "failed to read platform_profile"),
-            error.WriteFailed => self.replyError(req, err_failed, "failed to write platform_profile"),
-        };
-        if (changed) try self.emitActiveProfileChanged();
-    }
-
-    /// Asks Polkit about `sender`. Returns null when authorized, otherwise the
-    /// denial text (formatted into `msg_buf`).
-    fn authorize(self: *Bus, sender: []const u8, msg_buf: []u8) ServeError!?[]const u8 {
-        self.authorizing = true;
-        defer self.authorizing = false;
-
-        var w = self.writer();
+        // Ask Polkit and return to the loop; the verdict arrives as a reply
+        // that `pump` routes to `finishAuthorization`.
         const serial = self.t.takeSerial();
-        try polkit.writeRequest(&w, serial, sender);
-        const reply = self.transact(&w, serial) catch |err| switch (err) {
-            error.Timeout => return polkit.failure(msg_buf, "timed out"),
-            else => return err,
+        var w = self.writer();
+        try polkit.writeRequest(&w, serial, m.sender);
+        w.finish();
+        try self.t.send(w.bytes());
+        self.pending[i] = .{
+            .polkit_serial = serial,
+            .deadline_ms = nowMs() + call_timeout_ms,
+            .call_serial = m.serial,
+            .call_flags = m.flags,
+            .sender = undefined,
+            .sender_len = @intCast(m.sender.len),
+            .requested = requested,
         };
-        return polkit.decide(reply, msg_buf);
+        @memcpy(self.pending[i].sender[0..m.sender.len], m.sender);
+        self.setPending(i, true);
     }
 };
 
@@ -429,23 +533,7 @@ pub fn run(daemon: *Daemon, bus_address: ?[]const u8) !void {
 
     var bus: Bus = .{ .t = .{ .fd = fd }, .daemon = daemon };
     try bus.start();
-
-    while (true) {
-        _ = try bus.pump(null);
-
-        var fds = [2]linux.pollfd{
-            .{ .fd = fd, .events = POLLIN, .revents = 0 },
-            .{ .fd = daemon.sysfs.fd, .events = watch_events, .revents = 0 },
-        };
-        switch (linux.errno(linux.poll(&fds, 2, -1))) {
-            .SUCCESS => {},
-            .INTR => continue,
-            else => return error.PollFailed,
-        }
-
-        if (fds[0].revents != 0) try bus.t.recv();
-        if (fds[1].revents & watch_ready != 0) try bus.serviceWatch();
-    }
+    while (true) try bus.serveOnce(rawPoll);
 }
 
 // ---------------------------------------------------------------------------
@@ -480,7 +568,7 @@ const TestPair = struct {
     /// Lets the bus read and serve everything queued so far.
     fn serve(self: TestPair) !void {
         try self.bus.t.recv();
-        _ = try self.bus.pump(null);
+        try self.bus.pump();
     }
 
     /// Everything the bus has sent so far, without blocking.
@@ -518,7 +606,12 @@ fn buildProps(buf: []u8, member: []const u8, sig: []const u8) !wire.Writer {
 }
 
 fn buildSet(buf: []u8, value: []const u8) !wire.Writer {
-    var w = try buildProps(buf, "Set", "ssv");
+    return buildSetAs(buf, 7, value);
+}
+
+fn buildSetAs(buf: []u8, serial: u32, value: []const u8) !wire.Writer {
+    var w: wire.Writer = .{ .buf = buf };
+    try w.beginCall(serial, bus_name, object_path, iface_properties, "Set", "ssv", ":1.99");
     try w.putStr(interface);
     try w.putStr("ActiveProfile");
     try w.putSig("s");
@@ -674,7 +767,9 @@ test "Set rejects invalid input before Polkit and without writing" {
         try std.testing.expectEqual(wire.msg_error, reply.kind);
         try std.testing.expectEqualStrings(c.err, reply.err_name);
     }
-    try std.testing.expect(!bus.authorizing);
+    try std.testing.expectEqual(@as(usize, 0), bus.pendingCount());
+    var idle: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), pair.drain(&idle).len);
     try expectProfileFile(&tmp, "balanced");
     try std.testing.expectEqual(profile_mod.Profile.balanced, daemon.active);
 }
@@ -962,4 +1057,195 @@ test "property variants carry the signature that introspection declares" {
         var r: wire.Reader = .{ .buf = reply.body };
         try std.testing.expectEqualStrings(prop.signature(), try r.getSig());
     }
+}
+
+fn queueSet(pair: TestPair, serial: u32, value: []const u8) !void {
+    var buf: [512]u8 = undefined;
+    var w = try buildSetAs(&buf, serial, value);
+    try pair.queue(&w);
+}
+
+fn queueVerdict(pair: TestPair, request_serial: u32, authorized: bool) !void {
+    var buf: [256]u8 = undefined;
+    var w = try polkitReply(&buf, request_serial, authorized);
+    try pair.queue(&w);
+}
+
+fn errorText(m: wire.Message) ![]const u8 {
+    var r: wire.Reader = .{ .buf = m.body };
+    return r.getStr();
+}
+
+test "Set returns to the loop while Polkit is pending" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "balanced\n");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+
+    try queueSet(pair, 7, "performance");
+    try pair.serve();
+    var out: [2048]u8 = undefined;
+    var frames: Frames = .{ .rest = pair.drain(&out) };
+    const request = frames.next().?;
+    try std.testing.expectEqualStrings("CheckAuthorization", request.member);
+    // Nothing else yet: no reply, no signal, no write.
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+    try std.testing.expect(bus.isPending(0));
+    try expectProfileFile(&tmp, "balanced\n");
+
+    try queueVerdict(pair, request.serial, true);
+    try pair.serve();
+    frames = .{ .rest = pair.drain(&out) };
+    const reply = frames.next().?;
+    try std.testing.expectEqual(wire.msg_method_return, reply.kind);
+    try std.testing.expectEqual(@as(u32, 7), reply.reply_serial);
+    try std.testing.expectEqualStrings("PropertiesChanged", frames.next().?.member);
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+    try std.testing.expectEqual(@as(usize, 0), bus.pendingCount());
+    try expectProfileFile(&tmp, "performance\n");
+}
+
+test "concurrent Sets complete in the order Polkit answers" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "balanced\n");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+
+    try queueSet(pair, 7, "performance");
+    try queueSet(pair, 8, "power-saver");
+    try pair.serve();
+    var out: [4096]u8 = undefined;
+    var frames: Frames = .{ .rest = pair.drain(&out) };
+    const first = frames.next().?;
+    const second = frames.next().?;
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+
+    // Answer the second request first.
+    try queueVerdict(pair, second.serial, true);
+    try queueVerdict(pair, first.serial, true);
+    try pair.serve();
+    frames = .{ .rest = pair.drain(&out) };
+    try std.testing.expectEqual(@as(u32, 8), frames.next().?.reply_serial);
+    try std.testing.expectEqualStrings("PropertiesChanged", frames.next().?.member);
+    try std.testing.expectEqual(@as(u32, 7), frames.next().?.reply_serial);
+    try std.testing.expectEqualStrings("PropertiesChanged", frames.next().?.member);
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+    // The slower verdict was applied last, on top of the faster one.
+    try expectProfileFile(&tmp, "performance\n");
+}
+
+test "a Set beyond the pending limit fails immediately" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "balanced\n");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+
+    for (0..max_pending + 1) |i| try queueSet(pair, @intCast(10 + i), "performance");
+    try pair.serve();
+    var out: [8192]u8 = undefined;
+    var frames: Frames = .{ .rest = pair.drain(&out) };
+    for (0..max_pending) |_| try std.testing.expectEqualStrings("CheckAuthorization", frames.next().?.member);
+    const refused = frames.next().?;
+    try std.testing.expectEqual(wire.msg_error, refused.kind);
+    try std.testing.expectEqualStrings(err_failed, refused.err_name);
+    try std.testing.expectEqual(@as(u32, 10 + max_pending), refused.reply_serial);
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+}
+
+test "an unanswered authorization times out as denied" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "balanced");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+
+    try queueSet(pair, 7, "performance");
+    try pair.serve();
+    var out: [2048]u8 = undefined;
+    _ = pair.drain(&out);
+
+    try bus.expirePending();
+    try std.testing.expectEqual(@as(usize, 0), pair.drain(&out).len); // not overdue yet
+    bus.pending[0].deadline_ms = 0;
+    try bus.expirePending();
+    var frames: Frames = .{ .rest = pair.drain(&out) };
+    const reply = frames.next().?;
+    try std.testing.expectEqualStrings(err_access_denied, reply.err_name);
+    try std.testing.expect(std.mem.find(u8, try errorText(reply), "timed out") != null);
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+    try std.testing.expectEqual(@as(usize, 0), bus.pendingCount());
+    try expectProfileFile(&tmp, "balanced");
+}
+
+test "verdicts for unknown requests are ignored" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "balanced");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+
+    try queueVerdict(pair, 12345, true);
+    try pair.serve();
+    var out: [256]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), pair.drain(&out).len);
+    try expectProfileFile(&tmp, "balanced");
+}
+
+const FakePoll = struct {
+    var timeout: i32 = 0;
+    fn watchEvent(fds: *[2]linux.pollfd, timeout_ms: i32) usize {
+        timeout = timeout_ms;
+        fds[1].revents = POLLPRI;
+        return 1;
+    }
+};
+
+test "the loop waits indefinitely when idle and never starves the profile watch" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "balanced\n");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+    var out: [2048]u8 = undefined;
+
+    // Idle: no deadline, so poll may block indefinitely; an unchanged
+    // profile announces nothing.
+    try bus.serveOnce(FakePoll.watchEvent);
+    try std.testing.expectEqual(@as(i32, -1), FakePoll.timeout);
+    try std.testing.expectEqual(@as(usize, 0), pair.drain(&out).len);
+
+    // With an authorization pending, poll is bounded by its deadline, and a
+    // hardware profile change is still announced while the prompt is open.
+    try queueSet(pair, 7, "performance");
+    try pair.serve();
+    _ = pair.drain(&out);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = "low-power\n" });
+    try bus.serveOnce(FakePoll.watchEvent);
+    try std.testing.expect(FakePoll.timeout > 0 and FakePoll.timeout <= call_timeout_ms);
+    var frames: Frames = .{ .rest = pair.drain(&out) };
+    try std.testing.expectEqualStrings("PropertiesChanged", frames.next().?.member);
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+    try std.testing.expect(bus.isPending(0));
+    try std.testing.expectEqual(profile_mod.Profile.power_saver, daemon.active);
 }
