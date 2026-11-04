@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Install smoke-test dependencies
+        run: sudo apt-get update && sudo apt-get install -y dbus-daemon python3-gi gir1.2-glib-2.0 util-linux
+
+      # Ubuntu runners restrict unprivileged user namespaces, which the init
+      # and isolated D-Bus smoke tests rely on.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Unit tests (Debug, includes zig fmt check)
+        run: zig build test
+
+      - name: Unit tests (ReleaseFast)
+        run: zig build test -Doptimize=ReleaseFast
+
+      - name: Build shipped binaries
+        run: |
+          zig build
+          zig build --prefix "$RUNNER_TEMP/stage"
+
+      - name: Install layout, binary separation and size budget
+        run: |
+          bash tools/check-install.sh "$RUNNER_TEMP/stage"
+          bash tools/check-size.sh "$RUNNER_TEMP/stage"
+
+      - name: Init helper smoke test
+        run: bash tools/init-smoke.sh "$RUNNER_TEMP/stage/lib/platform-profile-daemon-init"
+
+      - name: Isolated D-Bus smoke test
+        run: unshare --user --map-root-user python3 tools/dbus-isolated-smoke.py

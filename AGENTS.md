@@ -277,6 +277,11 @@ zig build test
 zig build
 ```
 
+The parsers that read bytes from the bus (`dbus/wire.zig`, `dbus/transport.zig`)
+have fuzz tests; `zig build test --fuzz=500K -Dllvm=true` explores them. Keep new
+byte-parsing code covered the same way. `tools/check-size.sh` enforces binary
+size budgets after `zig build`.
+
 For D-Bus changes, run the system-bus smoke test on a root/systemd target:
 
 ```sh

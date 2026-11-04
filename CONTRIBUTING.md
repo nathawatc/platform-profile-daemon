@@ -51,7 +51,19 @@ Run before submitting changes:
 zig build test                      # includes the zig fmt check
 zig build -Doptimize=ReleaseFast
 bash tools/check-install.sh zig-out
+bash tools/check-size.sh zig-out
 bash tools/init-smoke.sh
+```
+
+CI (`.github/workflows/ci.yml`) runs the same checks plus the isolated D-Bus
+smoke test.
+
+The wire parser and message framing have fuzz tests. Plain `zig build test`
+replays deterministic mutation and chunking sweeps; to explore further, run
+a bounded session (coverage-guided fuzzing needs the LLVM backend):
+
+```sh
+zig build test --fuzz=500K -Dllvm=true
 ```
 
 The init smoke test uses unprivileged user/mount namespaces and a temporary

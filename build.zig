@@ -27,7 +27,11 @@ pub fn build(b: *std.Build) void {
     b.installFile("data/org.freedesktop.UPower.PowerProfiles.conf", "share/dbus-1/system.d/org.freedesktop.UPower.PowerProfiles.conf");
     b.installFile("data/org.freedesktop.UPower.PowerProfiles.policy", "share/polkit-1/actions/org.freedesktop.UPower.PowerProfiles.policy");
 
+    // Coverage-guided fuzzing (`zig build test --fuzz -Dllvm=true`) needs the
+    // LLVM backend; the default Debug backend has no coverage instrumentation.
+    const use_llvm = b.option(bool, "llvm", "Build tests with the LLVM backend (required for --fuzz)");
     const tests = b.addTest(.{
+        .use_llvm = use_llvm,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,

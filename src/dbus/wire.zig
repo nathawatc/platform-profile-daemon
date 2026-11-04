@@ -319,3 +319,69 @@ test "arrays patch their length and honour element alignment" {
     try r.alignTo(8);
     try std.testing.expectEqual(w.len - r.pos, len);
 }
+
+/// True if `s` lies inside `input` (empty slices are always fine).
+fn within(input: []const u8, s: []const u8) bool {
+    if (s.len == 0) return true;
+    const start = @intFromPtr(input.ptr);
+    const at = @intFromPtr(s.ptr);
+    return at >= start and at + s.len <= start + input.len;
+}
+
+/// Properties every input must satisfy, however malformed: parsing never
+/// panics, every field borrows from the input, and a message that parses is
+/// exactly one frame.
+fn checkParse(input: []const u8) !void {
+    const m = parseMessage(input) orelse return;
+    for ([_][]const u8{ m.path, m.iface, m.member, m.sender, m.sig, m.err_name, m.body }) |field| {
+        try std.testing.expect(within(input, field));
+    }
+    try std.testing.expectEqual(@as(?usize, input.len), frameLength(input[0..header_len]));
+}
+
+fn fuzzParse(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buf: [1024]u8 = undefined;
+    try checkParse(buf[0..smith.slice(&buf)]);
+}
+
+test "fuzz: parseMessage never panics and only borrows from its input" {
+    try std.testing.fuzz({}, fuzzParse, .{});
+}
+
+/// Representative messages: a call with sender and body, and an error reply.
+fn sampleMessages(bufs: *[2][256]u8) ![2][]const u8 {
+    var call: Writer = .{ .buf = &bufs[0] };
+    try call.beginCall(7, "org.example.Dest", "/org/example", "org.example.Iface", "Set", "ssv", ":1.99");
+    try call.putStr("iface");
+    try call.putStr("prop");
+    try call.putSig("s");
+    try call.putStr("value");
+    call.finish();
+
+    var err: Writer = .{ .buf = &bufs[1] };
+    try err.beginMessage(msg_error, flag_no_reply_expected, 8);
+    try err.fieldStr(field_error_name, 's', "org.example.Error");
+    try err.fieldU32(field_reply_serial, 7);
+    try err.fieldStr(field_signature, 'g', "s");
+    try err.endFields();
+    try err.putStr("boom");
+    err.finish();
+    return .{ call.bytes(), err.bytes() };
+}
+
+test "every truncation and single-byte corruption of valid messages is handled" {
+    var bufs: [2][256]u8 = undefined;
+    const samples = try sampleMessages(&bufs);
+    for (samples) |sample| {
+        try std.testing.expect(parseMessage(sample) != null);
+        var copy: [256]u8 = undefined;
+        for (0..sample.len + 1) |len| try checkParse(sample[0..len]);
+        for (0..sample.len) |i| {
+            for ([_]u8{ 0x00, 0x01, 0x7f, 0x80, 0xff, sample[i] ^ 0x01 }) |value| {
+                @memcpy(copy[0..sample.len], sample);
+                copy[i] = value;
+                try checkParse(copy[0..sample.len]);
+            }
+        }
+    }
+}

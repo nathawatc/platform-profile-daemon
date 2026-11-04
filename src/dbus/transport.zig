@@ -289,3 +289,64 @@ test "authenticate rejects anything but OK" {
         try std.testing.expectError(error.AuthFailed, t.authenticate());
     }
 }
+
+/// Feeds `bytes` to `t` in `chunk`-sized pieces and returns the members of the
+/// frames it yields, in order.
+fn feedMembers(t: *Transport, bytes: []const u8, chunk: usize, out: *[8][16]u8, count: *usize) !void {
+    var rest = bytes;
+    while (rest.len > 0) {
+        const take = @min(chunk, rest.len, t.rbuf.len - t.rlen);
+        @memcpy(t.rbuf[t.rlen..][0..take], rest[0..take]);
+        t.rlen += take;
+        rest = rest[take..];
+        while (try t.nextFrame()) |frame| {
+            const member = wire.parseMessage(frame).?.member;
+            @memcpy(out[count.*][0..member.len], member);
+            out[count.*][member.len] = 0;
+            count.* += 1;
+        }
+    }
+}
+
+test "frames survive any chunking of the byte stream" {
+    var a_buf: [256]u8 = undefined;
+    const a = try putCall(&a_buf, "First", "");
+    var b_buf: [256]u8 = undefined;
+    const b = try putCall(&b_buf, "Second", "");
+    var stream: [512]u8 = undefined;
+    @memcpy(stream[0..a.len], a.bytes());
+    @memcpy(stream[a.len..][0..b.len], b.bytes());
+    const all = stream[0 .. a.len + b.len];
+
+    for (1..all.len + 1) |chunk| {
+        var t: Transport = .{ .fd = -1 };
+        var names: [8][16]u8 = undefined;
+        var count: usize = 0;
+        try feedMembers(&t, all, chunk, &names, &count);
+        try std.testing.expectEqual(@as(usize, 2), count);
+        try std.testing.expectEqualStrings("First", std.mem.sliceTo(&names[0], 0));
+        try std.testing.expectEqualStrings("Second", std.mem.sliceTo(&names[1], 0));
+        try std.testing.expectEqual(@as(usize, 0), t.rlen);
+    }
+}
+
+fn fuzzFrames(_: void, smith: *std.testing.Smith) anyerror!void {
+    var t: Transport = .{ .fd = -1 };
+    var chunk: [256]u8 = undefined;
+    while (!smith.eosWeightedSimple(15, 1)) {
+        const take = @min(smith.slice(&chunk), t.rbuf.len - t.rlen);
+        @memcpy(t.rbuf[t.rlen..][0..take], chunk[0..take]);
+        t.rlen += take;
+        while (true) {
+            // An unusable header ends the stream, as it ends the connection.
+            const frame = (t.nextFrame() catch return) orelse break;
+            try std.testing.expect(frame.len >= wire.header_len and frame.len <= t.cur.len);
+            _ = wire.parseMessage(frame);
+        }
+        try std.testing.expect(t.rlen <= t.rbuf.len);
+    }
+}
+
+test "fuzz: framing never panics or overruns its buffers" {
+    try std.testing.fuzz({}, fuzzFrames, .{});
+}
