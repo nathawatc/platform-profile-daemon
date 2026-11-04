@@ -40,6 +40,7 @@ jobs:
         run: |
           bash tools/check-install.sh "$RUNNER_TEMP/stage"
           bash tools/check-size.sh "$RUNNER_TEMP/stage"
+          bash tools/check-units.sh
 
       - name: Init helper smoke test
         run: bash tools/init-smoke.sh "$RUNNER_TEMP/stage/lib/platform-profile-daemon-init"

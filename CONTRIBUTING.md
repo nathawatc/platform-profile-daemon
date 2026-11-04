@@ -52,6 +52,7 @@ zig build test                      # includes the zig fmt check
 zig build -Doptimize=ReleaseFast
 bash tools/check-install.sh zig-out
 bash tools/check-size.sh zig-out
+bash tools/check-units.sh
 bash tools/init-smoke.sh
 ```
 
@@ -79,11 +80,16 @@ These checks do not replace target systemd sandbox and real Polkit validation.
 For D-Bus, service, or authorization changes, also run on a target machine:
 
 ```sh
-sudo systemctl restart platform-profile-daemon.service
+sudo systemctl daemon-reload
+sudo systemctl restart platform-profile-daemon-init platform-profile-daemon
+systemctl status platform-profile-daemon   # active, started via READY=1
+journalctl -u platform-profile-daemon -b   # no seccomp (SIGSYS) kills
 sudo ./tools/dbus-smoke.sh
+systemd-analyze security platform-profile-daemon.service
 ```
 
-Then verify desktop widget or power-menu switching still works.
+Then verify desktop widget or power-menu switching still works. To check the
+watchdog, `sudo kill -STOP` the daemon: systemd restarts it after about 30 s.
 
 ## Compatibility rules
 

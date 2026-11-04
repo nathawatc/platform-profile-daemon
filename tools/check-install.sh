@@ -32,6 +32,19 @@ for unit in "$daemon" "$init"; do
 		grep -qx "$setting" "$unit"
 	done
 done
+for unit in "$daemon" "$init"; do
+	for setting in 'RestrictNamespaces=yes' 'RestrictSUIDSGID=yes' 'RestrictRealtime=yes' \
+		'UMask=0077' 'ProtectProc=invisible' 'ProcSubset=pid' 'IPAddressDeny=any' \
+		'SystemCallFilter=~@privileged @resources'; do
+		grep -qx "$setting" "$unit"
+	done
+done
+for setting in 'PrivateDevices=yes' 'PrivateNetwork=yes' 'ProtectKernelLogs=yes' \
+	'ProtectKernelModules=yes'; do
+	grep -qx "$setting" "$daemon"
+done
+# These would break the sysfs write.
+! grep -Eq '^(ProtectKernelTunables|PrivateUsers|User|DynamicUser)=' "$daemon" "$init"
 if grep -q '^Alias=power-profiles-daemon.service' "$daemon"; then
 	! grep -q '^Conflicts=.*power-profiles-daemon.service' "$daemon"
 fi

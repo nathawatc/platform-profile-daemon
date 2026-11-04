@@ -325,9 +325,24 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
 ReadWritePaths=/sys/firmware/acpi/platform_profile
+PrivateDevices=yes
+PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+UMask=0077
+ProtectProc=invisible
+IPAddressDeny=any
 SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 ```
+
+Both units score 0.9 in `systemd-analyze security` (`tools/check-units.sh`
+gates this). Never use `ProtectKernelTunables`, `PrivateUsers`, `User=` or
+`DynamicUser=` to lower the score: they break the sysfs write. Before adding
+a syscall that is in `@privileged` or `@resources`, check the runtime does
+not need it (trace with `strace -f`); `std.start` only calls `prlimit64`.
 
 ## Testing
 
@@ -345,10 +360,12 @@ zig build test
 zig build
 bash tools/check-install.sh zig-out
 bash tools/check-size.sh zig-out
+bash tools/check-units.sh
 bash tools/init-smoke.sh
 ```
 
-`tools/check-size.sh` enforces the binary size budgets. The init smoke test
+`tools/check-size.sh` enforces the binary size budgets and
+`tools/check-units.sh` the unit exposure scores. The init smoke test
 uses unprivileged user and mount namespaces. For D-Bus changes also run the
 isolated smoke test, which uses a private bus, fake sysfs and a test Polkit
 responder (needs `python-gobject`; run after a plain `zig build`):
@@ -375,8 +392,22 @@ test on a root/systemd target:
 sudo ./tools/dbus-smoke.sh
 ```
 
-It should cover reads, writes, invalid input rejection, mapping correctness
-and same-profile no-write behavior. Fake-file tests cannot produce `POLLPRI`,
+Sandbox directives cannot be exercised without systemd, so after changing a
+unit also run on the target machine:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl restart platform-profile-daemon-init platform-profile-daemon
+systemctl status platform-profile-daemon       # active, started via READY=1
+journalctl -u platform-profile-daemon -b       # no seccomp (SIGSYS) kills
+systemd-analyze security platform-profile-daemon.service
+```
+
+To exercise the watchdog, `sudo kill -STOP` the daemon: systemd restarts it
+after about 30 s ("Watchdog timeout" in the journal).
+
+The smoke test should cover reads, writes, invalid input rejection, mapping
+correctness and same-profile no-write behavior. Fake-file tests cannot produce `POLLPRI`,
 so validate change notification on the target machine with `busctl monitor`
 while changing `platform_profile`, and again while a Polkit prompt is open.
 
