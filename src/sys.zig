@@ -3,8 +3,9 @@
 //! There is no libc and therefore no global `errno`: every failing call returns
 //! `error.Sys` and stores the kernel errno through the `errno` out-parameter so
 //! callers can map it to their own error names and log it. `EINTR` is retried,
-//! short reads and writes are completed, and a write that makes no progress
-//! fails with `errno == .SUCCESS`.
+//! short writes are completed, and a write that makes no progress fails with
+//! `errno == .SUCCESS`. Reads are a single positional `pread`: sysfs hands out
+//! a whole attribute in one read, so no EOF probe is needed.
 //!
 //! The `*With` variants take the syscall as a comptime function so tests can
 //! inject failures without any runtime indirection in release builds.
@@ -17,14 +18,22 @@ pub fn close(fd: linux.fd_t) void {
     _ = linux.close(fd);
 }
 
-pub fn open(dir: linux.fd_t, path: [*:0]const u8, flags: linux.O, errno: *linux.E) Error!linux.fd_t {
+/// Opens an existing file. Runtime code never creates files, so `CREAT` is
+/// rejected at compile time (it would also need a mode argument).
+pub fn open(dir: linux.fd_t, path: [*:0]const u8, comptime flags: linux.O, errno: *linux.E) Error!linux.fd_t {
     return openWith(rawOpen, dir, path, flags, errno);
 }
 
-/// Reads from offset 0 until `buf` is full or EOF. Positional, so the same fd
-/// can be read repeatedly without seeking.
-pub fn readAll(fd: linux.fd_t, buf: []u8, errno: *linux.E) Error!usize {
-    return readAllWith(rawPread, fd, buf, errno);
+/// Reads up to `buf.len` bytes from offset 0 with one `pread`, so the same fd
+/// can be read repeatedly without seeking. A result that fills `buf` may be
+/// truncated; callers reading sysfs attributes treat it as malformed.
+pub fn readOnce(fd: linux.fd_t, buf: []u8, errno: *linux.E) Error!usize {
+    return readOnceWith(rawPread, fd, buf, errno);
+}
+
+/// True for the errnos that mean "not allowed" rather than "broken".
+pub fn isPermissionDenied(errno: linux.E) bool {
+    return errno == .ACCES or errno == .PERM;
 }
 
 pub fn writeAll(fd: linux.fd_t, bytes: []const u8, errno: *linux.E) Error!void {
@@ -43,7 +52,8 @@ fn rawWrite(fd: linux.fd_t, ptr: [*]const u8, len: usize) usize {
     return linux.write(fd, ptr, len);
 }
 
-fn openWith(comptime open_fn: anytype, dir: linux.fd_t, path: [*:0]const u8, flags: linux.O, errno: *linux.E) Error!linux.fd_t {
+fn openWith(comptime open_fn: anytype, dir: linux.fd_t, path: [*:0]const u8, comptime flags: linux.O, errno: *linux.E) Error!linux.fd_t {
+    if (flags.CREAT) @compileError("sys.open does not create files");
     while (true) {
         const rc = open_fn(dir, path, flags);
         switch (linux.errno(rc)) {
@@ -57,22 +67,18 @@ fn openWith(comptime open_fn: anytype, dir: linux.fd_t, path: [*:0]const u8, fla
     }
 }
 
-fn readAllWith(comptime pread_fn: anytype, fd: linux.fd_t, buf: []u8, errno: *linux.E) Error!usize {
-    var total: usize = 0;
-    while (total < buf.len) {
-        const rc = pread_fn(fd, buf[total..].ptr, buf.len - total, total);
+fn readOnceWith(comptime pread_fn: anytype, fd: linux.fd_t, buf: []u8, errno: *linux.E) Error!usize {
+    while (true) {
+        const rc = pread_fn(fd, buf.ptr, buf.len, 0);
         switch (linux.errno(rc)) {
-            .SUCCESS => {},
-            .INTR => continue,
+            .SUCCESS => return rc,
+            .INTR => {},
             else => |e| {
                 errno.* = e;
                 return error.Sys;
             },
         }
-        if (rc == 0) break;
-        total += rc;
     }
-    return total;
 }
 
 fn writeAllWith(comptime write_fn: anytype, fd: linux.fd_t, bytes: []const u8, errno: *linux.E) Error!void {
@@ -120,16 +126,16 @@ test "open reports errno and retries EINTR" {
     try std.testing.expectEqual(linux.E.NOENT, errno);
 }
 
-test "readAll retries EINTR, completes short reads and reports errno" {
+test "readOnce retries EINTR, reads once and reports errno" {
     const State = struct {
         var calls: usize = 0;
         const text = "performance\n";
-        fn shortReads(_: linux.fd_t, ptr: [*]u8, len: usize, offset: usize) usize {
+        fn eintrOnce(_: linux.fd_t, ptr: [*]u8, len: usize, offset: usize) usize {
             calls += 1;
             if (calls == 1) return testutil.failure(.INTR);
-            if (offset >= text.len) return 0;
-            const n = @min(@min(len, text.len - offset), 3);
-            @memcpy(ptr[0..n], text[offset..][0..n]);
+            std.debug.assert(offset == 0);
+            const n = @min(len, text.len);
+            @memcpy(ptr[0..n], text[0..n]);
             return n;
         }
         fn denied(_: linux.fd_t, _: [*]u8, _: usize, _: usize) usize {
@@ -138,11 +144,21 @@ test "readAll retries EINTR, completes short reads and reports errno" {
     };
     var errno: linux.E = .SUCCESS;
     var buf: [64]u8 = undefined;
-    const n = try readAllWith(State.shortReads, -1, &buf, &errno);
+    const n = try readOnceWith(State.eintrOnce, -1, &buf, &errno);
     try std.testing.expectEqualStrings("performance\n", buf[0..n]);
+    // One retry, then exactly one successful read: no EOF probe.
+    try std.testing.expectEqual(@as(usize, 2), State.calls);
 
-    try std.testing.expectError(error.Sys, readAllWith(State.denied, -1, &buf, &errno));
+    try std.testing.expectError(error.Sys, readOnceWith(State.denied, -1, &buf, &errno));
     try std.testing.expectEqual(linux.E.ACCES, errno);
+}
+
+test "isPermissionDenied covers exactly ACCES and PERM" {
+    try std.testing.expect(isPermissionDenied(.ACCES));
+    try std.testing.expect(isPermissionDenied(.PERM));
+    try std.testing.expect(!isPermissionDenied(.NOENT));
+    try std.testing.expect(!isPermissionDenied(.IO));
+    try std.testing.expect(!isPermissionDenied(.SUCCESS));
 }
 
 test "writeAll retries EINTR, completes short writes and reports errno" {
@@ -193,5 +209,5 @@ test "readAll and writeAll work on a real file" {
     defer close(rfd);
     var buf: [64]u8 = undefined;
     // Repeatable: positional reads do not consume the file.
-    for (0..2) |_| try std.testing.expectEqualStrings("low-power\n", buf[0..try readAll(rfd, &buf, &errno)]);
+    for (0..2) |_| try std.testing.expectEqualStrings("low-power\n", buf[0..try readOnce(rfd, &buf, &errno)]);
 }

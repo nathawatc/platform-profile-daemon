@@ -67,8 +67,9 @@ fn readInitial(path: [:0]const u8) !profile.Profile {
     defer sys.close(fd);
     var buf: [64]u8 = undefined;
     var errno: linux.E = .SUCCESS;
-    const n = sys.readAll(fd, &buf, &errno) catch return failure(path, ioError(errno, error.ReadFailed), errno);
-    // Strict: one optional trailing newline, no custom fallback.
+    const n = sys.readOnce(fd, &buf, &errno) catch return failure(path, ioError(errno, error.ReadFailed), errno);
+    // Strict: one optional trailing newline, no custom fallback. A value that
+    // fills the buffer cannot be a profile name and is rejected as well.
     return profile.Profile.parseKernel(buf[0..n]) catch failure(path, error.UnknownKernelProfile, .SUCCESS);
 }
 
@@ -78,7 +79,7 @@ fn isPolicyName(name: []const u8) bool {
     return true;
 }
 
-fn openAt(dir: linux.fd_t, name: [:0]const u8, flags: linux.O, path: []const u8) !linux.fd_t {
+fn openAt(dir: linux.fd_t, name: [:0]const u8, comptime flags: linux.O, path: []const u8) !linux.fd_t {
     var errno: linux.E = .SUCCESS;
     return sys.open(dir, name.ptr, flags, &errno) catch failure(path, error.OpenFailed, errno);
 }
@@ -89,10 +90,7 @@ fn write(fd: linux.fd_t, bytes: []const u8, path: []const u8) !void {
 }
 
 fn ioError(errno: linux.E, comptime fallback: anyerror) anyerror {
-    return switch (errno) {
-        .ACCES, .PERM => error.PermissionDenied,
-        else => fallback,
-    };
+    return if (sys.isPermissionDenied(errno)) error.PermissionDenied else fallback;
 }
 
 fn failure(path: []const u8, err: anyerror, errno: linux.E) anyerror {
@@ -108,7 +106,7 @@ fn seedPolicy(dir: std.Io.Dir, name: []const u8) !void {
 }
 
 fn expectFile(dir: std.Io.Dir, name: []const u8, contents: []const u8) !void {
-    var buf: [64]u8 = undefined;
+    var buf: [128]u8 = undefined;
     try std.testing.expectEqualStrings(contents, try dir.readFile(std.testing.io, name, &buf));
 }
 
@@ -135,7 +133,7 @@ test "initial supported profiles enable every policy and reapply saved profile" 
 }
 
 test "unsupported initial profiles fail before any writes" {
-    for ([_][]const u8{ "custom\n", "quiet\n", "cool\n", "balanced-performance\n", "unknown\n", "", " balanced\n", "balanced\n\n", "balanced\x00" }) |initial| {
+    for ([_][]const u8{ "custom\n", "quiet\n", "cool\n", "balanced-performance\n", "unknown\n", "", " balanced\n", "balanced\n\n", "balanced\x00", "balancedxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n" }) |initial| {
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "profile", .data = initial });

@@ -18,8 +18,8 @@ Runtime sources (`src/`):
 - `profile.zig`: the single `Profile` enum, the fixed D-Bus/kernel mapping and
   the strict `platform_profile` parser shared by both executables.
 - `sysfs.zig`: the held-open `platform_profile` file: read, fresh read, write.
-- `sys.zig`: raw syscall I/O (`open`, `readAll`, `writeAll`) with `EINTR` and
-  short-transfer handling and errno capture; shared by both executables.
+- `sys.zig`: raw syscall I/O (`open`, `readOnce`, `writeAll`) with `EINTR`
+  handling and errno capture; shared by both executables.
 - `rt.zig`: libc-free runtime for both executables (panic and log handlers).
 - `dbus.zig`: the PowerProfiles service: properties, dispatch, signals and
   the run loop.
@@ -189,7 +189,10 @@ Preserve strict runtime state semantics:
   name with at most one trailing newline, no other whitespace
 - the cache may update only after a valid external read or a successful sysfs
   write
-- read/write helpers must handle `EINTR`, short reads/writes and fd cleanup
+- helpers must handle `EINTR`, short writes and fd cleanup; a sysfs attribute
+  is read with a single `pread` because kernfs returns it whole, and a value
+  that fills the buffer is malformed
+- runtime code never creates files (`sys.open` rejects `CREAT` at compile time)
 - expected warning noise may be suppressed in tests only, not runtime
 
 The daemon holds `platform_profile` open read-only and polls it for

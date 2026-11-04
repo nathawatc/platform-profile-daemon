@@ -54,16 +54,18 @@ pub const Sysfs = struct {
 fn readFd(fd: linux.fd_t) Error!profile.Profile {
     var buf: [64]u8 = undefined;
     var errno: linux.E = .SUCCESS;
-    const n = sys.readAll(fd, &buf, &errno) catch return fail(errno, error.ReadFailed, false);
+    const n = sys.readOnce(fd, &buf, &errno) catch return fail(errno, error.ReadFailed, false);
+    // A value that fills the buffer cannot be a profile name; the strict
+    // parser rejects it.
     return profile.Profile.parseKernel(buf[0..n]);
 }
 
 /// Maps a failing errno to a semantic error. A missing path only means an
 /// unsupported platform while opening.
 fn fail(errno: linux.E, comptime fallback: IoError, opening: bool) IoError {
+    if (sys.isPermissionDenied(errno)) return error.PermissionDenied;
     return switch (errno) {
         .NOENT, .NOTDIR => if (opening) error.UnsupportedPlatform else fallback,
-        .ACCES, .PERM => error.PermissionDenied,
         else => fallback,
     };
 }
@@ -112,6 +114,19 @@ test "read reports custom, malformed and empty content strictly" {
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = "quiet\n" });
     try std.testing.expectError(error.Unknown, sysfs.read());
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = "balanced \n" });
+    try std.testing.expectError(error.Unknown, sysfs.read());
+}
+
+test "an oversized value is malformed, not truncated into a profile" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var big: [100]u8 = undefined;
+    @memcpy(big[0.."balanced\n".len], "balanced\n");
+    @memset(big["balanced\n".len..], ' ');
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = &big });
+    const sysfs = try Sysfs.open(try testutil.tmpPath(tmp.dir, "p", &buf));
+    defer sysfs.close();
     try std.testing.expectError(error.Unknown, sysfs.read());
 }
 
