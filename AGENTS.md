@@ -55,7 +55,9 @@ straight to stderr (log lines carry an sd-daemon `<N>` priority prefix) and
 traps, so std's stack-trace, debug-info and `Io.Threaded` machinery is never
 linked. `main` returns a `u8` exit status instead of an error union so
 `std.start` never prints an error trace. Keep stack tracing, the segfault
-handler and the sigaltstack disabled.
+handler and the sigaltstack disabled. Each root also sets
+`std_options_debug_threaded_io = null`, so std debug I/O (`std.debug.print`,
+`lockStderr`) fails to compile instead of linking `Io.Threaded`.
 
 The D-Bus bus address comes from `std.process.Init.Minimal.environ`, not
 `getenv`. Release builds use `pie = false` and section GC; check the result

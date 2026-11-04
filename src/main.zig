@@ -4,6 +4,9 @@ const dbus = @import("dbus.zig");
 const rt = @import("rt.zig");
 
 pub const std_options = rt.std_options;
+// No std debug I/O: keeps the Io.Threaded singleton and Io.File.Writer out of the binary.
+// A null here turns any accidental use of std.debug I/O into a compile error.
+pub const std_options_debug_threaded_io: ?*std.Io.Threaded = null;
 pub const panic = std.debug.FullPanic(rt.panicFn);
 
 const default_platform_profile_path = "/sys/firmware/acpi/platform_profile";
