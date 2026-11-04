@@ -13,6 +13,7 @@ const notify = @import("notify.zig");
 const polkit = @import("dbus/polkit.zig");
 const transport = @import("dbus/transport.zig");
 const wire = @import("dbus/wire.zig");
+const sys = @import("sys.zig");
 const testutil = @import("testutil.zig");
 
 const eql = wire.eql;
@@ -1307,6 +1308,16 @@ test "verdicts for unknown requests are ignored" {
 
 const FakePoll = struct {
     var timeout: i32 = 0;
+    fn failed(_: *[2]linux.pollfd, _: i32) usize {
+        return testutil.failure(.BADF);
+    }
+    fn interrupted(_: *[2]linux.pollfd, _: i32) usize {
+        return testutil.failure(.INTR);
+    }
+    fn hangup(fds: *[2]linux.pollfd, _: i32) usize {
+        fds[0].revents = POLLHUP;
+        return 1;
+    }
     fn watchEvent(fds: *[2]linux.pollfd, timeout_ms: i32) usize {
         timeout = timeout_ms;
         fds[1].revents = POLLPRI;
@@ -1360,4 +1371,159 @@ test "the watchdog ping bounds the poll timeout" {
 
     try bus.serveOnce(FakePoll.watchEvent);
     try std.testing.expect(FakePoll.timeout > 0 and FakePoll.timeout <= 10_000);
+}
+
+// -- startup and loop failures ---------------------------------------------
+
+/// Raw bytes from the peer, such as the SASL reply line.
+fn queueRaw(pair: TestPair, bytes: []const u8) !void {
+    try std.testing.expectEqual(bytes.len, linux.sendto(pair.peer, bytes.ptr, bytes.len, 0, null, 0));
+}
+
+/// A method return (or error) answering `reply_serial`, with an optional
+/// single `u32` body.
+fn queueReply(pair: TestPair, kind: u8, reply_serial: u32, body: ?u32) !void {
+    var buf: [256]u8 = undefined;
+    var w: wire.Writer = .{ .buf = &buf };
+    try w.beginMessage(kind, wire.flag_no_reply_expected, 90);
+    if (kind == wire.msg_error) try w.fieldStr(wire.field_error_name, 's', err_failed);
+    try w.fieldU32(wire.field_reply_serial, reply_serial);
+    if (body != null) try w.fieldStr(wire.field_signature, 'g', "u");
+    try w.endFields();
+    if (body) |v| try w.putU32(v);
+    try pair.queue(&w);
+}
+
+const Startup = struct {
+    tmp: std.testing.TmpDir,
+    path: [max_path]u8 = undefined,
+    daemon: Daemon = undefined,
+    bus: Bus = undefined,
+    pair: TestPair = undefined,
+
+    /// The caller's struct must stay in place: `bus` points into it.
+    fn setUp(self: *Startup) !void {
+        self.tmp = std.testing.tmpDir(.{});
+        self.daemon = try testDaemon(&self.tmp, &self.path, "balanced\n");
+        self.pair = try TestPair.init(&self.bus, &self.daemon);
+    }
+
+    fn tearDown(self: *Startup) void {
+        self.pair.deinit();
+        self.daemon.deinit();
+        self.tmp.cleanup();
+    }
+};
+
+test "start authenticates, says Hello, owns the name and reports ready" {
+    var st: Startup = .{ .tmp = undefined };
+    try st.setUp();
+    defer st.tearDown();
+
+    var name_buf: [64]u8 = undefined;
+    const name = try std.mem.print(&name_buf, "ppd-dbus-start-{d}", .{linux.getpid()});
+    const server = try testutil.listenDgram(sys.UnixAddress.abstract(name).?);
+    defer sys.close(server);
+    var target_buf: [64]u8 = undefined;
+    st.bus.notifier = .init(try std.mem.print(&target_buf, "@{s}", .{name}), null, null);
+    defer st.bus.notifier.deinit();
+
+    try queueRaw(st.pair, "OK 0123456789abcdef\r\n");
+    try queueReply(st.pair, wire.msg_method_return, 1, null);
+    try queueReply(st.pair, wire.msg_method_return, 2, 1);
+    try st.bus.start();
+    try testutil.expectDatagram(server, "READY=1");
+
+    var out: [2048]u8 = undefined;
+    const sent = st.pair.drain(&out);
+    try std.testing.expect(std.mem.startsWith(u8, sent, "\x00AUTH EXTERNAL "));
+    const begin = std.mem.find(u8, sent, "BEGIN\r\n").?;
+    var frames: Frames = .{ .rest = sent[begin + "BEGIN\r\n".len ..] };
+    try std.testing.expectEqualStrings("Hello", frames.next().?.member);
+    const request = frames.next().?;
+    try std.testing.expectEqualStrings("RequestName", request.member);
+    var r: wire.Reader = .{ .buf = request.body };
+    try std.testing.expectEqualStrings(bus_name, try r.getStr());
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+}
+
+test "start accepts being the owner already" {
+    var st: Startup = .{ .tmp = undefined };
+    try st.setUp();
+    defer st.tearDown();
+    try queueRaw(st.pair, "OK 00\r\n");
+    try queueReply(st.pair, wire.msg_method_return, 1, null);
+    try queueReply(st.pair, wire.msg_method_return, 2, 4);
+    try st.bus.start();
+}
+
+test "start fails when the name is taken, without reporting ready" {
+    var st: Startup = .{ .tmp = undefined };
+    try st.setUp();
+    defer st.tearDown();
+    var name_buf: [64]u8 = undefined;
+    const name = try std.mem.print(&name_buf, "ppd-dbus-taken-{d}", .{linux.getpid()});
+    const server = try testutil.listenDgram(sys.UnixAddress.abstract(name).?);
+    defer sys.close(server);
+    var target_buf: [64]u8 = undefined;
+    st.bus.notifier = .init(try std.mem.print(&target_buf, "@{s}", .{name}), null, null);
+    defer st.bus.notifier.deinit();
+
+    try queueRaw(st.pair, "OK 00\r\n");
+    try queueReply(st.pair, wire.msg_method_return, 1, null);
+    try queueReply(st.pair, wire.msg_method_return, 2, 3); // already owned, not queued
+    try std.testing.expectError(error.NameTaken, st.bus.start());
+    try testutil.expectDatagram(server, null);
+}
+
+test "start fails on an error reply to Hello" {
+    var st: Startup = .{ .tmp = undefined };
+    try st.setUp();
+    defer st.tearDown();
+    try queueRaw(st.pair, "OK 00\r\n");
+    try queueReply(st.pair, wire.msg_error, 1, null);
+    try std.testing.expectError(error.HelloFailed, st.bus.start());
+}
+
+test "start fails on a malformed RequestName reply" {
+    var st: Startup = .{ .tmp = undefined };
+    try st.setUp();
+    defer st.tearDown();
+    try queueRaw(st.pair, "OK 00\r\n");
+    try queueReply(st.pair, wire.msg_method_return, 1, null);
+    try queueReply(st.pair, wire.msg_method_return, 2, null); // no u32 body
+    try std.testing.expectError(error.NameRequestFailed, st.bus.start());
+}
+
+test "start stops when authentication is rejected" {
+    var st: Startup = .{ .tmp = undefined };
+    try st.setUp();
+    defer st.tearDown();
+    try queueRaw(st.pair, "REJECTED EXTERNAL\r\n");
+    try std.testing.expectError(error.AuthFailed, st.bus.start());
+    var out: [256]u8 = undefined;
+    try std.testing.expect(std.mem.find(u8, st.pair.drain(&out), "BEGIN") == null);
+}
+
+test "start fails when the bus hangs up mid-handshake" {
+    var st: Startup = .{ .tmp = undefined };
+    try st.setUp();
+    defer st.tearDown();
+    try queueRaw(st.pair, "OK 00\r\n");
+    _ = linux.shutdown(st.pair.peer, linux.SHUT.WR);
+    try std.testing.expectError(error.Closed, st.bus.start());
+}
+
+test "the loop reports poll failures, ignores signals and ends on hangup" {
+    var st: Startup = .{ .tmp = undefined };
+    try st.setUp();
+    defer st.tearDown();
+    var out: [256]u8 = undefined;
+
+    try std.testing.expectError(error.PollFailed, st.bus.serveOnce(FakePoll.failed));
+    try st.bus.serveOnce(FakePoll.interrupted);
+    try std.testing.expectEqual(@as(usize, 0), st.pair.drain(&out).len);
+
+    _ = linux.shutdown(st.pair.peer, linux.SHUT.WR);
+    try std.testing.expectError(error.Closed, st.bus.serveOnce(FakePoll.hangup));
 }

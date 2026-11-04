@@ -77,25 +77,8 @@ pub const Notifier = struct {
 
 const testutil = @import("testutil.zig");
 
-/// A bound datagram socket standing in for systemd.
-fn listen(addr: sys.UnixAddress) !linux.fd_t {
-    const rc = linux.socket(linux.AF.UNIX, linux.SOCK.DGRAM | linux.SOCK.CLOEXEC, 0);
-    try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(rc));
-    const fd: linux.fd_t = @intCast(rc);
-    try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.bind(fd, @ptrCast(&addr.sa), addr.len)));
-    return fd;
-}
-
-fn expectMessage(fd: linux.fd_t, expected: ?[]const u8) !void {
-    var buf: [64]u8 = undefined;
-    const n = linux.recvfrom(fd, &buf, buf.len, linux.MSG.DONTWAIT, null, null);
-    if (expected) |text| {
-        try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(n));
-        try std.testing.expectEqualStrings(text, buf[0..n]);
-    } else {
-        try std.testing.expectEqual(linux.E.AGAIN, linux.errno(n));
-    }
-}
+const listen = testutil.listenDgram;
+const expectMessage = testutil.expectDatagram;
 
 test "an abstract socket receives READY=1" {
     var name_buf: [64]u8 = undefined;
