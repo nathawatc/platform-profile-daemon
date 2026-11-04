@@ -402,6 +402,12 @@ CAPTURE_PCAP=/tmp/ppd.pcap unshare --user --map-root-user \
 python3 tools/capture-corpus.py /tmp/ppd.pcap
 ```
 
+Regeneration always shows a diff (serials and unique bus names vary), so
+review it. The script refuses frames whose header names fall outside an
+allowlist or whose body text looks like a home or temp path or the user or
+host name. `python3 tools/capture-corpus.py --verify` re-checks the committed
+corpus and that `frames.zig` matches the `.bin` files; CI runs it.
+
 For D-Bus, service or authorization changes, also run the system-bus smoke
 test on a root/systemd target:
 

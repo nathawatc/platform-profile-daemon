@@ -45,5 +45,8 @@ jobs:
       - name: Init helper smoke test
         run: bash tools/init-smoke.sh "$RUNNER_TEMP/stage/lib/platform-profile-daemon-init"
 
+      - name: Captured-frame corpus is intact
+        run: python3 tools/capture-corpus.py --verify
+
       - name: Isolated D-Bus smoke test
         run: unshare --user --map-root-user python3 tools/dbus-isolated-smoke.py
