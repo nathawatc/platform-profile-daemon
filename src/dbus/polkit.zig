@@ -169,3 +169,51 @@ test "denial text is truncated on a UTF-8 boundary and fits its buffer" {
     var tiny: [8]u8 = undefined;
     try std.testing.expectEqualStrings("polkit authorization failed", failure(&tiny, "x"));
 }
+
+/// Whatever Polkit (or a confused peer) sends, `decide` returns a bounded
+/// answer: authorized, or text that fits `out` or is one of the fixed strings.
+fn checkDecide(m: wire.Message) !void {
+    var out: [256]u8 = undefined;
+    const denial = decide(m, &out) orelse return;
+    try std.testing.expect(denial.len > 0 and denial.len <= out.len);
+    try std.testing.expect(std.mem.startsWith(u8, denial, "polkit authorization failed") or
+        std.mem.endsWith(u8, denial, "to switch power profile"));
+}
+
+fn fuzzDecide(_: void, smith: *std.testing.Smith) anyerror!void {
+    const signatures = [_][]const u8{ "(bba{ss})", "s", "", "u" };
+    var sig_buf: [16]u8 = undefined;
+    var body: [256]u8 = undefined;
+    const sig: []const u8 = if (smith.value(bool))
+        signatures[smith.value(u2)]
+    else
+        sig_buf[0..smith.slice(&sig_buf)];
+    try checkDecide(testReply(
+        if (smith.value(bool)) wire.msg_method_return else wire.msg_error,
+        sig,
+        body[0..smith.slice(&body)],
+    ));
+}
+
+test "fuzz: decide gives a bounded answer for any reply" {
+    try std.testing.fuzz({}, fuzzDecide, .{});
+}
+
+test "decide survives every truncation of valid and error replies" {
+    var buf: [64]u8 = undefined;
+    const valid = try authorityReply(&buf, 0, 1);
+    for (0..valid.body.len + 1) |n| {
+        var m = valid;
+        m.body = valid.body[0..n];
+        try checkDecide(m);
+        m.kind = wire.msg_error;
+        m.sig = "s";
+        try checkDecide(m);
+    }
+
+    // An error text longer than the output buffer is cut, not overrun.
+    var long: [600]u8 = undefined;
+    var w: wire.Writer = .{ .buf = &long };
+    try w.putStr(&@as([300]u8, @splat('x')));
+    try checkDecide(testReply(wire.msg_error, "s", w.bytes()));
+}

@@ -379,10 +379,10 @@ responder (needs `python-gobject`; run after a plain `zig build`):
 unshare --user --map-root-user python3 tools/dbus-isolated-smoke.py
 ```
 
-The parsers that read bytes from the bus (`dbus/wire.zig`,
-`dbus/transport.zig`) have fuzz tests. Plain `zig build test` replays
-deterministic sweeps; explore further with a bounded session (fuzzing needs the
-LLVM backend):
+The code that reads bytes from the bus (`dbus/wire.zig`, framing and SASL in
+`dbus/transport.zig`, `decide` in `dbus/polkit.zig`) has fuzz tests. Plain
+`zig build test` replays deterministic sweeps; explore further with a bounded
+session (fuzzing needs the LLVM backend):
 
 ```sh
 zig build test --fuzz=500K -Dllvm=true

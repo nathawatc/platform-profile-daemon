@@ -275,6 +275,57 @@ test "authenticate rejects anything but OK" {
     }
 }
 
+/// Runs `authenticate` against a peer that sends `reply` and then hangs up,
+/// so the call can only succeed or fail, never wait.
+fn authAgainst(reply: []const u8) !Transport {
+    const sv = try socketPair();
+    defer _ = linux.close(sv[1]);
+    var t: Transport = .{ .fd = sv[0] };
+    defer _ = linux.close(sv[0]);
+    var off: usize = 0;
+    while (off < reply.len) {
+        const rc = linux.sendto(sv[1], reply[off..].ptr, reply.len - off, linux.MSG.NOSIGNAL, null, 0);
+        try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(rc));
+        off += rc;
+    }
+    _ = linux.shutdown(sv[1], linux.SHUT.WR);
+    t.authenticate() catch |err| {
+        // Anything else would be a new failure mode worth a look.
+        try std.testing.expect(err == error.AuthFailed or err == error.Closed);
+        return err;
+    };
+    return t;
+}
+
+fn fuzzAuthenticate(_: void, smith: *std.testing.Smith) anyerror!void {
+    var reply: [512]u8 = undefined;
+    const bytes = reply[0..smith.slice(&reply)];
+    var t = authAgainst(bytes) catch return;
+    // Accepted: exactly the bytes after the first line remain.
+    const end = std.mem.find(u8, bytes, "\r\n").? + 2;
+    try std.testing.expect(std.mem.startsWith(u8, bytes, "OK "));
+    try std.testing.expectEqualStrings(bytes[end..], t.rbuf[0..t.rlen]);
+}
+
+test "fuzz: SASL replies are accepted or refused, never hang" {
+    try std.testing.fuzz({}, fuzzAuthenticate, .{});
+}
+
+test "authenticate handles truncated, oversized and trailing replies" {
+    const ok = "OK 0123456789abcdef\r\n";
+    // A line cut anywhere before its CRLF ends in a hang-up.
+    for (0..ok.len) |n| try std.testing.expectError(error.Closed, authAgainst(ok[0..n]));
+
+    const t = try authAgainst(ok ++ "tail");
+    try std.testing.expectEqualStrings("tail", t.rbuf[0..t.rlen]);
+
+    // A line that never ends fills the buffer and is refused.
+    const long: [16384]u8 = @splat('x');
+    try std.testing.expectError(error.AuthFailed, authAgainst(&long));
+    // So does an OK that is not an OK line.
+    try std.testing.expectError(error.AuthFailed, authAgainst("OKAY\r\n"));
+}
+
 /// Feeds `bytes` to `t` in `chunk`-sized pieces and returns the members of the
 /// frames it yields, in order.
 fn feedMembers(t: *Transport, bytes: []const u8, chunk: usize, out: *[8][16]u8, count: *usize) !void {
