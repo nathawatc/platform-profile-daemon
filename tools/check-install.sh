@@ -32,6 +32,12 @@ done
 if grep -q '^Alias=power-profiles-daemon.service' "$daemon"; then
 	! grep -q '^Conflicts=.*power-profiles-daemon.service' "$daemon"
 fi
+for binary in platform-profile-daemon platform-profile-daemon-init; do
+	if strings "$prefix/lib/$binary" | grep -Eq 'testutil|std/testing|testing\.zig'; then
+		echo "Test code leaked into $binary" >&2
+		exit 1
+	fi
+done
 if strings "$prefix/lib/platform-profile-daemon" | grep -q 'energy_performance_preference'; then
 	echo 'Bootstrap code leaked into daemon' >&2
 	exit 1

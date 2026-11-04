@@ -18,12 +18,15 @@ Daemon D-Bus API. It maps profile changes to one sysfs file:
 - `src/sys.zig`: raw syscall I/O (`open`, `readAll`, `writeAll`) with `EINTR` and
   short-transfer handling and errno capture; shared by both executables.
 - `src/rt.zig`: libc-free runtime shared by both executables (panic and log handlers).
-- `src/testutil.zig`: test-only helpers; never imported by runtime code.
+- `src/testutil.zig`: test-only helpers; referenced only from `test` blocks. A
+  file-scope `@import` is fine because unreferenced declarations are never
+  analysed; `tools/check-install.sh` verifies no test code reaches a binary.
 - `src/dbus.zig`: the PowerProfiles service: properties, dispatch, signals, run loop.
 - `src/dbus/wire.zig`: D-Bus marshalling and message parsing.
 - `src/dbus/transport.zig`: bus address, socket, SASL EXTERNAL, message framing.
 - `src/dbus/polkit.zig`: Polkit request encoding and reply decoding.
-- `src/dbus/introspection.xml`: introspection data, embedded with `@embedFile`.
+- `src/dbus/introspection_{head,tail}.xml`: fixed introspection data, embedded with
+  `@embedFile`; the PowerProfiles property entries are generated from `Prop`.
 - `data/`: systemd unit, D-Bus activation/policy, and Polkit policy files.
 
 > [!NOTE]

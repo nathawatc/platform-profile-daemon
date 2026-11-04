@@ -48,10 +48,9 @@ const POLLNVAL: i16 = linux.POLL.NVAL;
 const watch_events: i16 = POLLPRI | POLLERR;
 const watch_ready: i16 = watch_events | POLLHUP | POLLNVAL;
 
-const introspection_xml = @embedFile("dbus/introspection.xml");
-
 /// The retained properties. Tag names are the D-Bus property names, so this is
-/// the one list that Get, GetAll and Set share.
+/// the one place that defines them: Get, GetAll, Set and the introspection
+/// data are all derived from it.
 const Prop = enum {
     ActiveProfile,
     PerformanceDegraded,
@@ -60,6 +59,50 @@ const Prop = enum {
     ActionsInfo,
     ActiveProfileHolds,
     Version,
+
+    /// D-Bus type signature of the property value.
+    fn signature(self: Prop) []const u8 {
+        return switch (self) {
+            .ActiveProfile, .PerformanceDegraded, .Version => "s",
+            .Actions => "as",
+            .Profiles, .ActionsInfo, .ActiveProfileHolds => "aa{sv}",
+        };
+    }
+
+    /// Only ActiveProfile can be set, and it is the only one that changes.
+    fn writable(self: Prop) bool {
+        return self == .ActiveProfile;
+    }
+};
+
+/// One `<property>` entry. Plain concatenation: std.fmt would drag its
+/// error-name table into the binary.
+fn propertyXml(comptime prop: Prop) []const u8 {
+    const emits = if (prop.writable()) "true" else "false";
+    return "  <property name=\"" ++ @tagName(prop) ++ "\" type=\"" ++ prop.signature() ++
+        "\" access=\"" ++ (if (prop.writable()) "readwrite" else "read") ++ "\">\n" ++
+        "   <annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"" ++ emits ++ "\"/>\n" ++
+        "  </property>\n";
+}
+
+/// Fixed interfaces, then one block per `Prop`, then the closing tags.
+/// Built into one exactly-sized array so no intermediate strings are emitted.
+const introspection_xml: []const u8 = blk: {
+    const head = @embedFile("dbus/introspection_head.xml");
+    const tail = @embedFile("dbus/introspection_tail.xml");
+    var len = head.len + tail.len;
+    for (std.enums.values(Prop)) |prop| len += propertyXml(prop).len;
+    var buf: [len]u8 = undefined;
+    @memcpy(buf[0..head.len], head);
+    var at: usize = head.len;
+    for (std.enums.values(Prop)) |prop| {
+        const part = propertyXml(prop);
+        @memcpy(buf[at..][0..part.len], part);
+        at += part.len;
+    }
+    @memcpy(buf[at..][0..tail.len], tail);
+    const final = buf;
+    break :blk &final;
 };
 
 /// Explicit because message dispatch and Polkit waiting call each other.
@@ -212,31 +255,16 @@ const Bus = struct {
 
     /// Writes a VARIANT holding the property value.
     fn putPropValue(self: *Bus, w: *wire.Writer, prop: Prop) !void {
+        try w.putSig(prop.signature());
         switch (prop) {
-            .ActiveProfile => {
-                try w.putSig("s");
-                try w.putStr(self.daemon.active.dbusName());
-            },
-            .PerformanceDegraded => {
-                try w.putSig("s");
-                try w.putStr("");
-            },
-            .Version => {
-                try w.putSig("s");
-                try w.putStr(build_options.version);
-            },
-            .Actions => {
-                try w.putSig("as");
-                const arr = try w.beginArray(4);
-                w.endArray(arr, 4);
-            },
-            .ActionsInfo, .ActiveProfileHolds => {
-                try w.putSig("aa{sv}");
-                const outer = try w.beginArray(4);
-                w.endArray(outer, 4);
+            .ActiveProfile => try w.putStr(self.daemon.active.dbusName()),
+            .PerformanceDegraded => try w.putStr(""),
+            .Version => try w.putStr(build_options.version),
+            .Actions, .ActionsInfo, .ActiveProfileHolds => {
+                const empty = try w.beginArray(4);
+                w.endArray(empty, 4);
             },
             .Profiles => {
-                try w.putSig("aa{sv}");
                 const outer = try w.beginArray(4);
                 for (std.enums.values(profile_mod.Profile)) |p| {
                     const inner = try w.beginArray(8);
@@ -895,4 +923,43 @@ test "serviceWatch reports a lost watch after repeated read failures" {
     try bus.serviceWatch();
     try bus.serviceWatch();
     try std.testing.expectError(error.WatchLost, bus.serviceWatch());
+}
+
+test "generated introspection describes every property from Prop" {
+    try std.testing.expect(std.mem.find(u8, introspection_xml,
+        \\  <property name="ActiveProfile" type="s" access="readwrite">
+        \\   <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        \\  </property>
+        \\
+    ) != null);
+    try std.testing.expect(std.mem.find(u8, introspection_xml,
+        \\  <property name="Profiles" type="aa{sv}" access="read">
+        \\   <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+        \\  </property>
+        \\
+    ) != null);
+    try std.testing.expect(std.mem.endsWith(u8, introspection_xml, "  </property>\n </interface>\n</node>\n"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, introspection_xml, "access=\"readwrite\""));
+}
+
+test "property variants carry the signature that introspection declares" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "balanced\n");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+
+    for (std.enums.values(Prop)) |prop| {
+        var buf: [512]u8 = undefined;
+        var w = try buildProps(&buf, "Get", "ss");
+        try w.putStr(interface);
+        try w.putStr(@tagName(prop));
+        var out: [1024]u8 = undefined;
+        const reply = try pair.roundTrip(&w, &out);
+        var r: wire.Reader = .{ .buf = reply.body };
+        try std.testing.expectEqualStrings(prop.signature(), try r.getSig());
+    }
 }
