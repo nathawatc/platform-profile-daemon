@@ -240,7 +240,9 @@ Polkit is asked without blocking: a validated `Set` takes a slot in a fixed
 table (`max_pending`, 8) and the main loop keeps serving the bus and the
 profile watch. Verdicts are applied in the order they arrive, each reading the
 kernel fresh; an unanswered request is denied after 25 s; a ninth concurrent
-`Set` fails immediately. Do not reintroduce a nested blocking wait.
+`Set` fails immediately. A new `Set` from a sender that already has one
+pending supersedes it (the older call gets `Failed`), so one client cannot
+fill the table. Do not reintroduce a nested blocking wait.
 
 Do not add compatibility stubs for unsupported members without a demonstrated
 desktop/widget compatibility need.

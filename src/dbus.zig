@@ -225,6 +225,13 @@ const Bus = struct {
         return null;
     }
 
+    fn findPendingBySender(self: *const Bus, sender: []const u8) ?usize {
+        for (0..max_pending) |i| {
+            if (self.isPending(i) and eql(self.pending[i].sender[0..self.pending[i].sender_len], sender)) return i;
+        }
+        return null;
+    }
+
     fn freePending(self: *const Bus) ?usize {
         for (0..max_pending) |i| {
             if (!self.isPending(i)) return i;
@@ -504,7 +511,14 @@ const Bus = struct {
         if (m.sender.len == 0 or m.sender.len > 255) {
             return self.replyError(m, err_failed, "failed to resolve D-Bus sender");
         }
-        const i = self.freePending() orelse
+        // One pending change per sender: a newer Set supersedes the older one,
+        // so a single client cannot occupy every slot. The older Polkit verdict
+        // no longer matches a slot and is ignored.
+        const i = if (self.findPendingBySender(m.sender)) |old| blk: {
+            self.setPending(old, false);
+            try self.replyError(self.pending[old].call(), err_failed, "superseded by a newer profile change");
+            break :blk old;
+        } else self.freePending() orelse
             return self.replyError(m, err_failed, "too many pending profile changes");
 
         // Ask Polkit and return to the loop; the verdict arrives as a reply
@@ -629,8 +643,12 @@ fn buildSet(buf: []u8, value: []const u8) !wire.Writer {
 }
 
 fn buildSetAs(buf: []u8, serial: u32, value: []const u8) !wire.Writer {
+    return buildSetFrom(buf, serial, ":1.99", value);
+}
+
+fn buildSetFrom(buf: []u8, serial: u32, sender: []const u8, value: []const u8) !wire.Writer {
     var w: wire.Writer = .{ .buf = buf };
-    try w.beginCall(serial, bus_name, object_path, iface_properties, "Set", "ssv", ":1.99");
+    try w.beginCall(serial, bus_name, object_path, iface_properties, "Set", "ssv", sender);
     try w.putStr(interface);
     try w.putStr("ActiveProfile");
     try w.putSig("s");
@@ -1084,6 +1102,12 @@ fn queueSet(pair: TestPair, serial: u32, value: []const u8) !void {
     try pair.queue(&w);
 }
 
+fn queueSetFrom(pair: TestPair, serial: u32, sender: []const u8, value: []const u8) !void {
+    var buf: [512]u8 = undefined;
+    var w = try buildSetFrom(&buf, serial, sender, value);
+    try pair.queue(&w);
+}
+
 fn queueVerdict(pair: TestPair, request_serial: u32, authorized: bool) !void {
     var buf: [256]u8 = undefined;
     var w = try polkitReply(&buf, request_serial, authorized);
@@ -1139,7 +1163,7 @@ test "concurrent Sets complete in the order Polkit answers" {
     defer pair.deinit();
 
     try queueSet(pair, 7, "performance");
-    try queueSet(pair, 8, "power-saver");
+    try queueSetFrom(pair, 8, ":1.98", "power-saver");
     try pair.serve();
     var out: [4096]u8 = undefined;
     var frames: Frames = .{ .rest = pair.drain(&out) };
@@ -1171,7 +1195,11 @@ test "a Set beyond the pending limit fails immediately" {
     const pair = try TestPair.init(&bus, &daemon);
     defer pair.deinit();
 
-    for (0..max_pending + 1) |i| try queueSet(pair, @intCast(10 + i), "performance");
+    for (0..max_pending + 1) |i| {
+        var sender_buf: [16]u8 = undefined;
+        const sender = try std.mem.print(&sender_buf, ":1.{d}", .{10 + i});
+        try queueSetFrom(pair, @intCast(10 + i), sender, "performance");
+    }
     try pair.serve();
     var out: [8192]u8 = undefined;
     var frames: Frames = .{ .rest = pair.drain(&out) };
@@ -1181,6 +1209,53 @@ test "a Set beyond the pending limit fails immediately" {
     try std.testing.expectEqualStrings(err_failed, refused.err_name);
     try std.testing.expectEqual(@as(u32, 10 + max_pending), refused.reply_serial);
     try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+}
+
+test "a newer Set from the same sender supersedes its pending one" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "balanced\n");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+    var out: [4096]u8 = undefined;
+
+    try queueSet(pair, 7, "performance");
+    try queueSetFrom(pair, 20, ":1.50", "power-saver");
+    try queueSet(pair, 8, "power-saver");
+    try pair.serve();
+    var frames: Frames = .{ .rest = pair.drain(&out) };
+    const first = frames.next().?;
+    const other = frames.next().?;
+    const superseded = frames.next().?;
+    const second = frames.next().?;
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+    try std.testing.expectEqualStrings("CheckAuthorization", first.member);
+    try std.testing.expectEqualStrings("CheckAuthorization", other.member);
+    try std.testing.expectEqual(wire.msg_error, superseded.kind);
+    try std.testing.expectEqualStrings(err_failed, superseded.err_name);
+    try std.testing.expectEqual(@as(u32, 7), superseded.reply_serial);
+    try std.testing.expectEqualStrings("CheckAuthorization", second.member);
+    // The other sender keeps its slot; this sender holds one.
+    try std.testing.expectEqual(@as(usize, 2), bus.pendingCount());
+
+    // The superseded request's verdict is ignored.
+    try queueVerdict(pair, first.serial, true);
+    try pair.serve();
+    try std.testing.expectEqual(@as(usize, 0), pair.drain(&out).len);
+    try expectProfileFile(&tmp, "balanced\n");
+
+    // The current one applies.
+    try queueVerdict(pair, second.serial, true);
+    try pair.serve();
+    frames = .{ .rest = pair.drain(&out) };
+    const reply = frames.next().?;
+    try std.testing.expectEqual(wire.msg_method_return, reply.kind);
+    try std.testing.expectEqual(@as(u32, 8), reply.reply_serial);
+    try expectProfileFile(&tmp, "low-power\n");
+    try std.testing.expectEqual(@as(usize, 1), bus.pendingCount());
 }
 
 test "an unanswered authorization times out as denied" {
