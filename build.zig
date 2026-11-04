@@ -3,7 +3,12 @@ const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    // Binaries default to ReleaseSmall, which is what the package ships. An explicit
+    // -Doptimize applies to both binaries and tests; without it the tests stay in
+    // Debug so their overflow and bounds checks still run.
+    const requested = b.option(std.lang.Optimize, "optimize", "Prioritize performance, safety, or binary size (default: small; tests: debug)");
+    const optimize = requested orelse .small;
+    const test_optimize = requested orelse .debug;
     const strip = b.option(bool, "strip", "Strip debug symbols") orelse (optimize != .debug);
 
     const exe = addRuntime(b, "platform-profile-daemon", "src/main.zig", target, optimize, strip);
@@ -26,7 +31,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
-            .optimize = optimize,
+            .optimize = test_optimize,
         }),
     });
     configureDaemon(b, tests.root_module);
@@ -37,7 +42,7 @@ pub fn build(b: *std.Build) void {
     const init_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/init.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = test_optimize,
     }) });
     test_step.dependOn(&b.addRunArtifact(init_tests).step);
 }
@@ -50,7 +55,7 @@ fn addRuntime(
     name: []const u8,
     root: []const u8,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     strip: bool,
 ) *std.Build.Step.Compile {
     const release = optimize != .debug;

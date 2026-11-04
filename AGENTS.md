@@ -26,15 +26,20 @@ Daemon D-Bus API. It maps profile changes to one sysfs file:
 ## Build
 
 ```sh
-zig build test
-zig build -Doptimize=ReleaseFast
+zig build test                        # Debug tests, safety checks on
+zig build                             # ReleaseSmall, the shipped build
+zig build -Doptimize=ReleaseFast      # optional: faster, larger
 ```
+
+`build.zig` declares `-Doptimize` itself and defaults the binaries to
+ReleaseSmall (the package build). An explicit `-Doptimize` applies to the
+tests too. `--release` is not used.
 
 For local fake-sysfs testing:
 
 ```sh
 printf 'balanced\n' > /tmp/platform_profile
-zig build -Doptimize=ReleaseFast
+zig build
 sudo ./zig-out/lib/platform-profile-daemon --platform-profile /tmp/platform_profile
 ```
 
@@ -248,7 +253,7 @@ Before handing off changes, run:
 
 ```sh
 zig build test
-zig build -Doptimize=ReleaseFast
+zig build
 ```
 
 For D-Bus changes, run the system-bus smoke test on a root/systemd target:
