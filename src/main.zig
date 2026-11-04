@@ -30,7 +30,11 @@ fn run(init: std.process.Init.Minimal) !void {
     };
     defer daemon.deinit();
 
-    dbus.run(&daemon, init.environ.getPosix("DBUS_SYSTEM_BUS_ADDRESS")) catch |err| {
+    dbus.run(&daemon, .{
+        .bus_address = init.environ.getPosix("DBUS_SYSTEM_BUS_ADDRESS"),
+        .notify_socket = init.environ.getPosix("NOTIFY_SOCKET"),
+        .watchdog_usec = init.environ.getPosix("WATCHDOG_USEC"),
+    }) catch |err| {
         std.log.err("D-Bus service failed: {t}", .{err});
         return err;
     };
@@ -96,6 +100,7 @@ test {
     _ = @import("dbus/polkit.zig");
     _ = @import("dbus/transport.zig");
     _ = @import("dbus/wire.zig");
+    _ = @import("notify.zig");
     _ = @import("profile.zig");
     _ = @import("rt.zig");
     _ = @import("sys.zig");

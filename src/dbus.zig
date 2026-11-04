@@ -9,6 +9,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const Daemon = @import("daemon.zig").Daemon;
 const profile_mod = @import("profile.zig");
+const notify = @import("notify.zig");
 const polkit = @import("dbus/polkit.zig");
 const transport = @import("dbus/transport.zig");
 const wire = @import("dbus/wire.zig");
@@ -153,6 +154,7 @@ const Bus = struct {
     /// would be emitted into `.rodata`.
     pending: [max_pending]Pending = undefined,
     pending_mask: u8 = 0,
+    notifier: notify.Notifier = .{},
 
     fn writer(self: *Bus) wire.Writer {
         return .{ .buf = &self.out };
@@ -174,6 +176,7 @@ const Bus = struct {
     /// One iteration of the service loop: serve buffered frames, time out
     /// overdue authorizations, then wait for the bus or the profile watch.
     fn serveOnce(self: *Bus, comptime poll_fn: anytype) ServeError!void {
+        self.notifier.ping(nowMs());
         try self.pump();
         try self.expirePending();
 
@@ -229,16 +232,17 @@ const Bus = struct {
         return null;
     }
 
-    /// Milliseconds until the earliest authorization deadline, or -1 if none.
+    /// Milliseconds until the loop must wake without any I/O: the earliest
+    /// authorization deadline or the next watchdog ping. -1 means never.
     fn nextTimeoutMs(self: *const Bus) i32 {
-        var earliest: ?i64 = null;
+        const now = nowMs();
+        var wait = self.notifier.nextPingMs(now);
         for (0..max_pending) |i| {
             if (!self.isPending(i)) continue;
-            const deadline = self.pending[i].deadline_ms;
-            if (earliest == null or deadline < earliest.?) earliest = deadline;
+            const left: i32 = @intCast(std.math.clamp(self.pending[i].deadline_ms - now, 0, std.math.maxInt(i32)));
+            wait = if (wait < 0) left else @min(wait, left);
         }
-        const deadline = earliest orelse return -1;
-        return @intCast(std.math.clamp(deadline - nowMs(), 0, std.math.maxInt(i32)));
+        return wait;
     }
 
     /// Answers every authorization whose deadline has passed.
@@ -331,6 +335,7 @@ const Bus = struct {
             1, 4 => {}, // primary owner, already owner
             else => return error.NameTaken,
         }
+        self.notifier.ready();
     }
 
     // -- replies ------------------------------------------------------------
@@ -523,15 +528,29 @@ const Bus = struct {
     }
 };
 
+/// Process environment the service reads; all optional.
+pub const RunOptions = struct {
+    /// `DBUS_SYSTEM_BUS_ADDRESS`: overrides the default system bus address.
+    bus_address: ?[]const u8 = null,
+    /// `NOTIFY_SOCKET`: where to report readiness (systemd `Type=notify`).
+    notify_socket: ?[]const u8 = null,
+    /// `WATCHDOG_USEC`: the watchdog period (systemd `WatchdogSec=`).
+    watchdog_usec: ?[]const u8 = null,
+};
+
 /// Connects to the system bus, claims the service name, and serves requests
 /// and platform_profile change events until the connection or the profile
-/// watch fails. `bus_address` overrides the default system bus address
-/// (`DBUS_SYSTEM_BUS_ADDRESS` from the environment).
-pub fn run(daemon: *Daemon, bus_address: ?[]const u8) !void {
-    const fd = try transport.connect(bus_address);
+/// watch fails.
+pub fn run(daemon: *Daemon, options: RunOptions) !void {
+    const fd = try transport.connect(options.bus_address);
     defer _ = linux.close(fd);
 
-    var bus: Bus = .{ .t = .{ .fd = fd }, .daemon = daemon };
+    var bus: Bus = .{
+        .t = .{ .fd = fd },
+        .daemon = daemon,
+        .notifier = .init(options.notify_socket, options.watchdog_usec),
+    };
+    defer bus.notifier.deinit();
     try bus.start();
     while (true) try bus.serveOnce(rawPoll);
 }
@@ -1248,4 +1267,20 @@ test "the loop waits indefinitely when idle and never starves the profile watch"
     try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
     try std.testing.expect(bus.isPending(0));
     try std.testing.expectEqual(profile_mod.Profile.power_saver, daemon.active);
+}
+
+test "the watchdog ping bounds the poll timeout" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "balanced\n");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+    // No socket (fd -1) so nothing is sent, but the schedule still runs.
+    bus.notifier = .{ .interval_ms = 10_000 };
+
+    try bus.serveOnce(FakePoll.watchEvent);
+    try std.testing.expect(FakePoll.timeout > 0 and FakePoll.timeout <= 10_000);
 }

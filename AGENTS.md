@@ -20,6 +20,8 @@ Runtime sources (`src/`):
 - `sysfs.zig`: the held-open `platform_profile` file: read, fresh read, write.
 - `sys.zig`: raw syscall I/O (`open`, `readOnce`, `writeAll`) with `EINTR`
   handling and errno capture; shared by both executables.
+- `notify.zig`: the two `sd_notify` messages the daemon sends (`READY=1`,
+  `WATCHDOG=1`) over `$NOTIFY_SOCKET`, without libsystemd.
 - `rt.zig`: libc-free runtime for both executables (panic and log handlers).
 - `dbus.zig`: the PowerProfiles service: properties, dispatch, signals and
   the run loop.
@@ -301,6 +303,13 @@ org.freedesktop.UPower.PowerProfiles.switch-profile
 
 Active local sessions are allowed by default. Inactive or remote sessions are
 denied unless local Polkit policy changes that.
+
+The daemon unit is `Type=notify` with `NotifyAccess=main` and
+`WatchdogSec=30s`. The daemon sends `READY=1` once it owns the bus name and a
+`WATCHDOG=1` ping every 15 s from the service loop, so systemd restarts a
+daemon whose loop hangs. Both are no-ops without `NOTIFY_SOCKET`, so running
+the binary by hand is unchanged. The service stays resident (no idle exit):
+desktop widgets listen for `PropertiesChanged` and must not miss changes.
 
 The daemon service is hardened and only keeps write access to:
 

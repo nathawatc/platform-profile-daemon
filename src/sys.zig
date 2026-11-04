@@ -14,6 +14,33 @@ const linux = std.os.linux;
 
 pub const Error = error{Sys};
 
+/// An `AF_UNIX` address as passed to `connect`/`bind`/`sendto`.
+pub const UnixAddress = struct {
+    sa: extern struct {
+        family: u16 = linux.AF.UNIX,
+        path: [108]u8 = @splat(0),
+    } = .{},
+    len: u32 = 0,
+
+    /// Filesystem socket. Null if empty or too long.
+    pub fn path(name: []const u8) ?UnixAddress {
+        var a: UnixAddress = .{};
+        if (name.len == 0 or name.len >= a.sa.path.len) return null;
+        @memcpy(a.sa.path[0..name.len], name);
+        a.len = @intCast(@sizeOf(u16) + name.len + 1);
+        return a;
+    }
+
+    /// Abstract-namespace socket (`name` excludes the leading NUL).
+    pub fn abstract(name: []const u8) ?UnixAddress {
+        var a: UnixAddress = .{};
+        if (name.len == 0 or name.len >= a.sa.path.len) return null;
+        @memcpy(a.sa.path[1..][0..name.len], name);
+        a.len = @intCast(@sizeOf(u16) + 1 + name.len);
+        return a;
+    }
+};
+
 pub fn close(fd: linux.fd_t) void {
     _ = linux.close(fd);
 }
@@ -210,4 +237,18 @@ test "readAll and writeAll work on a real file" {
     var buf: [64]u8 = undefined;
     // Repeatable: positional reads do not consume the file.
     for (0..2) |_| try std.testing.expectEqualStrings("low-power\n", buf[0..try readOnce(rfd, &buf, &errno)]);
+}
+
+test "unix addresses: path is NUL terminated, abstract starts with NUL" {
+    const p = UnixAddress.path("/run/x").?;
+    try std.testing.expectEqualStrings("/run/x", p.sa.path[0..6]);
+    try std.testing.expectEqual(@as(u32, 2 + 6 + 1), p.len);
+    const a = UnixAddress.abstract("name").?;
+    try std.testing.expectEqual(@as(u8, 0), a.sa.path[0]);
+    try std.testing.expectEqualStrings("name", a.sa.path[1..5]);
+    try std.testing.expectEqual(@as(u32, 2 + 1 + 4), a.len);
+    try std.testing.expectEqual(@as(?UnixAddress, null), UnixAddress.path(""));
+    var long: [108]u8 = @splat('x');
+    try std.testing.expectEqual(@as(?UnixAddress, null), UnixAddress.path(&long));
+    try std.testing.expectEqual(@as(?UnixAddress, null), UnixAddress.abstract(&long));
 }

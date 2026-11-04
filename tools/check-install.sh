@@ -17,6 +17,9 @@ done
 
 daemon=$prefix/lib/systemd/system/platform-profile-daemon.service
 init=$prefix/lib/systemd/system/platform-profile-daemon-init.service
+grep -qx 'Type=notify' "$daemon"
+grep -qx 'NotifyAccess=main' "$daemon"
+grep -qx 'WatchdogSec=30s' "$daemon"
 grep -qx 'Requires=platform-profile-daemon-init.service' "$daemon"
 grep -qx 'After=platform-profile-daemon-init.service' "$daemon"
 grep -qx 'Type=oneshot' "$init"

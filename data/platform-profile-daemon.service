@@ -5,7 +5,9 @@ Requires=platform-profile-daemon-init.service
 After=platform-profile-daemon-init.service
 
 [Service]
-Type=dbus
+Type=notify
+NotifyAccess=main
+WatchdogSec=30s
 BusName=org.freedesktop.UPower.PowerProfiles
 ExecStart=/usr/lib/platform-profile-daemon
 Restart=on-failure

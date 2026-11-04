@@ -7,6 +7,7 @@ No host services or real sysfs files are changed.
 """
 
 import os
+import socket
 import subprocess
 import tempfile
 import threading
@@ -80,14 +81,28 @@ def main():
             profile = Path(tree) / "platform_profile"
             profile.write_text("balanced\n")
             os.environ["PLATFORM_PROFILE_PATH"] = str(profile)
+            # Stand in for systemd: a notify socket and a 2 s watchdog.
+            notify = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            notify.bind(str(Path(tree) / "notify"))
+            notify.settimeout(5)
             daemon = subprocess.Popen(
                 [
                     str(ROOT / "zig-out/lib/platform-profile-daemon"),
                     "--platform-profile",
                     str(profile),
-                ]
+                ],
+                env={
+                    **os.environ,
+                    "NOTIFY_SOCKET": str(Path(tree) / "notify"),
+                    "WATCHDOG_USEC": "2000000",
+                },
             )
             assert ready.wait(5), "Daemon failed to acquire private bus name"
+            seen = []
+            while seen.count("WATCHDOG=1") < 2:
+                seen.append(notify.recv(64).decode())
+            assert "READY=1" in seen, seen
+            assert seen.index("READY=1") < seen.index("WATCHDOG=1"), seen
             subprocess.run(
                 ["busctl", "--system", "status", NAME],
                 check=True,
@@ -123,7 +138,8 @@ def main():
                 "Explicit request failed to converge"
             )
             print(
-                "Isolated D-Bus smoke passed: invalid requests bypass Polkit, same-profile no-write, custom convergence."
+                "Isolated D-Bus smoke passed: invalid requests bypass Polkit, "
+                "same-profile no-write, custom convergence, READY=1 and watchdog pings."
             )
     finally:
         if daemon is not None:

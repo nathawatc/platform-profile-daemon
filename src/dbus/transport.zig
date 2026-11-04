@@ -2,44 +2,29 @@
 //! EXTERNAL authentication, and splitting the byte stream into whole messages.
 //! Knows nothing about what the messages mean.
 const std = @import("std");
+const sys = @import("../sys.zig");
 const wire = @import("wire.zig");
 
 const linux = std.os.linux;
 
 pub const default_bus_address = "unix:path=/run/dbus/system_bus_socket";
 
-const SockaddrUn = extern struct {
-    family: u16 = linux.AF.UNIX,
-    path: [108]u8 = @splat(0),
-};
-
-const Endpoint = struct {
-    sa: SockaddrUn = .{},
-    len: u32 = 0,
-};
-
 /// Accepts the first `unix:` entry of a bus address list that has a usable
 /// `path=` or `abstract=` key.
-fn parseAddress(bus_address: ?[]const u8) !Endpoint {
+fn parseAddress(bus_address: ?[]const u8) !sys.UnixAddress {
     var address: []const u8 = bus_address orelse default_bus_address;
     if (std.mem.findScalar(u8, address, ';')) |end| address = address[0..end];
     if (!std.mem.startsWith(u8, address, "unix:")) return error.UnsupportedBusAddress;
 
-    var ep: Endpoint = .{};
     var params = std.mem.splitScalar(u8, address["unix:".len..], ',');
     while (params.next()) |param| {
         const eq = std.mem.findScalar(u8, param, '=') orelse continue;
         const key = param[0..eq];
         const value = param[eq + 1 ..];
-        if (value.len == 0 or value.len >= ep.sa.path.len) continue;
         if (wire.eql(key, "path")) {
-            @memcpy(ep.sa.path[0..value.len], value);
-            ep.len = @intCast(@sizeOf(u16) + value.len + 1);
-            return ep;
+            if (sys.UnixAddress.path(value)) |a| return a;
         } else if (wire.eql(key, "abstract")) {
-            @memcpy(ep.sa.path[1..][0..value.len], value);
-            ep.len = @intCast(@sizeOf(u16) + 1 + value.len);
-            return ep;
+            if (sys.UnixAddress.abstract(value)) |a| return a;
         }
     }
     return error.UnsupportedBusAddress;
