@@ -17,9 +17,10 @@ pub const Notifier = struct {
     next_ping_ms: i64 = 0,
 
     /// `notify_socket` is `$NOTIFY_SOCKET` (a path, or `@name` for an abstract
-    /// socket) and `watchdog_usec` is `$WATCHDOG_USEC`. Anything unusable
-    /// yields an inactive notifier.
-    pub fn init(notify_socket: ?[]const u8, watchdog_usec: ?[]const u8) Notifier {
+    /// socket), `watchdog_usec` is `$WATCHDOG_USEC` and `watchdog_pid` is
+    /// `$WATCHDOG_PID`. Anything unusable yields an inactive notifier; a
+    /// watchdog meant for another process is ignored (sd_watchdog_enabled(3)).
+    pub fn init(notify_socket: ?[]const u8, watchdog_usec: ?[]const u8, watchdog_pid: ?[]const u8) Notifier {
         var n: Notifier = .{};
         const target = notify_socket orelse return n;
         n.addr = (if (std.mem.startsWith(u8, target, "@"))
@@ -33,6 +34,10 @@ pub const Notifier = struct {
         if (linux.errno(rc) != .SUCCESS) return .{};
         n.fd = @intCast(rc);
 
+        if (watchdog_pid) |text| {
+            const pid = std.fmt.parseUnsigned(linux.pid_t, text, 10) catch return n;
+            if (pid != linux.getpid()) return n;
+        }
         if (watchdog_usec) |text| {
             if (std.fmt.parseUnsigned(u64, text, 10)) |usec| {
                 n.interval_ms = @intCast(@min(usec / 2000, std.math.maxInt(i32)));
@@ -99,7 +104,7 @@ test "an abstract socket receives READY=1" {
     defer sys.close(server);
 
     var target_buf: [64]u8 = undefined;
-    var n = Notifier.init(try std.mem.print(&target_buf, "@{s}", .{name}), null);
+    var n = Notifier.init(try std.mem.print(&target_buf, "@{s}", .{name}), null, null);
     defer n.deinit();
     n.ready();
     try expectMessage(server, "READY=1");
@@ -115,7 +120,7 @@ test "a filesystem socket receives READY=1" {
     const server = try listen(addr);
     defer sys.close(server);
 
-    var n = Notifier.init(path, null);
+    var n = Notifier.init(path, null, null);
     defer n.deinit();
     n.ready();
     try expectMessage(server, "READY=1");
@@ -128,7 +133,7 @@ test "the watchdog pings at half the configured period" {
     defer sys.close(server);
     var target_buf: [64]u8 = undefined;
     // WatchdogSec=30s arrives as 30000000 microseconds.
-    var n = Notifier.init(try std.mem.print(&target_buf, "@{s}", .{name}), "30000000");
+    var n = Notifier.init(try std.mem.print(&target_buf, "@{s}", .{name}), "30000000", null);
     defer n.deinit();
     try std.testing.expectEqual(@as(i64, 15_000), n.interval_ms);
 
@@ -147,14 +152,14 @@ test "without NOTIFY_SOCKET or with junk everything is a no-op" {
     var too_long: [200]u8 = @splat('x');
     too_long[0] = '/';
     for ([_]?[]const u8{ null, "", "relative/path", "@", &too_long }) |target| {
-        var n = Notifier.init(target, "30000000");
+        var n = Notifier.init(target, "30000000", null);
         defer n.deinit();
         try std.testing.expectEqual(@as(i32, -1), n.nextPingMs(0));
         n.ready();
         n.ping(1);
         try std.testing.expectEqual(@as(linux.fd_t, -1), n.fd);
     }
-    var no_watchdog = Notifier.init(null, null);
+    var no_watchdog = Notifier.init(null, null, null);
     try std.testing.expectEqual(@as(i32, -1), no_watchdog.nextPingMs(5));
 }
 
@@ -164,9 +169,33 @@ test "a malformed WATCHDOG_USEC disables the watchdog only" {
     const server = try listen(sys.UnixAddress.abstract(name).?);
     defer sys.close(server);
     var target_buf: [64]u8 = undefined;
-    var n = Notifier.init(try std.mem.print(&target_buf, "@{s}", .{name}), "soon");
+    var n = Notifier.init(try std.mem.print(&target_buf, "@{s}", .{name}), "soon", null);
     defer n.deinit();
     try std.testing.expectEqual(@as(i64, 0), n.interval_ms);
     n.ready();
     try expectMessage(server, "READY=1");
+}
+
+test "WATCHDOG_PID must name this process" {
+    var name_buf: [64]u8 = undefined;
+    const name = try std.mem.print(&name_buf, "ppd-notify-pid-{d}", .{linux.getpid()});
+    const server = try listen(sys.UnixAddress.abstract(name).?);
+    defer sys.close(server);
+    var target_buf: [64]u8 = undefined;
+    const target = try std.mem.print(&target_buf, "@{s}", .{name});
+    var pid_buf: [16]u8 = undefined;
+    const own = try std.mem.print(&pid_buf, "{d}", .{linux.getpid()});
+
+    var mine = Notifier.init(target, "30000000", own);
+    defer mine.deinit();
+    try std.testing.expectEqual(@as(i64, 15_000), mine.interval_ms);
+
+    // Someone else's or malformed: no watchdog, but READY still works.
+    for ([_][]const u8{ "1", "", "x", "-5" }) |other| {
+        var n = Notifier.init(target, "30000000", other);
+        defer n.deinit();
+        try std.testing.expectEqual(@as(i64, 0), n.interval_ms);
+        n.ready();
+        try expectMessage(server, "READY=1");
+    }
 }

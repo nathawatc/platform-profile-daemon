@@ -34,6 +34,7 @@ fn run(init: std.process.Init.Minimal) !void {
         .bus_address = init.environ.getPosix("DBUS_SYSTEM_BUS_ADDRESS"),
         .notify_socket = init.environ.getPosix("NOTIFY_SOCKET"),
         .watchdog_usec = init.environ.getPosix("WATCHDOG_USEC"),
+        .watchdog_pid = init.environ.getPosix("WATCHDOG_PID"),
     }) catch |err| {
         std.log.err("D-Bus service failed: {t}", .{err});
         return err;

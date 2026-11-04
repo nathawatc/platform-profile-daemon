@@ -550,6 +550,8 @@ pub const RunOptions = struct {
     notify_socket: ?[]const u8 = null,
     /// `WATCHDOG_USEC`: the watchdog period (systemd `WatchdogSec=`).
     watchdog_usec: ?[]const u8 = null,
+    /// `WATCHDOG_PID`: when set, the watchdog applies only if it is our pid.
+    watchdog_pid: ?[]const u8 = null,
 };
 
 /// Connects to the system bus, claims the service name, and serves requests
@@ -562,7 +564,7 @@ pub fn run(daemon: *Daemon, options: RunOptions) !void {
     var bus: Bus = .{
         .t = .{ .fd = fd },
         .daemon = daemon,
-        .notifier = .init(options.notify_socket, options.watchdog_usec),
+        .notifier = .init(options.notify_socket, options.watchdog_usec, options.watchdog_pid),
     };
     defer bus.notifier.deinit();
     try bus.start();

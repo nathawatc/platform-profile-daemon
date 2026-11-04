@@ -311,8 +311,10 @@ The daemon unit is `Type=notify` with `NotifyAccess=main` and
 `WatchdogSec=30s`. The daemon sends `READY=1` once it owns the bus name and a
 `WATCHDOG=1` ping every 15 s from the service loop, so systemd restarts a
 daemon whose loop hangs. Both are no-ops without `NOTIFY_SOCKET`, so running
-the binary by hand is unchanged. The service stays resident (no idle exit):
-desktop widgets listen for `PropertiesChanged` and must not miss changes.
+the binary by hand is unchanged. A `WATCHDOG_PID` naming another process
+disables the pings, as sd_watchdog_enabled(3) specifies. The service stays
+resident (no idle exit): desktop widgets listen for `PropertiesChanged` and
+must not miss changes.
 
 The daemon service is hardened and only keeps write access to:
 
