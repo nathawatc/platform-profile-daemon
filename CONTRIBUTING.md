@@ -54,12 +54,16 @@ bash tools/check-install.sh zig-out
 bash tools/check-size.sh zig-out
 bash tools/check-units.sh
 bash tools/init-smoke.sh
+python3 tools/capture-corpus.py --verify
+bash tools/lint.sh                  # shellcheck, shfmt, ruff, rumdl, zig fmt
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same checks plus the isolated D-Bus
-smoke test.
+`tools/lint.sh` needs `shellcheck`, `shfmt`, `ruff` and `rumdl` installed.
+CI (`.github/workflows/ci.yml`) runs the same checks in a `lint` and a `test`
+job, the latter adding the isolated D-Bus smoke test.
 
-The wire parser and message framing have fuzz tests. Plain `zig build test`
+The wire parser, message framing, SASL handshake and Polkit reply decoding
+have fuzz tests. Plain `zig build test`
 replays deterministic mutation and chunking sweeps; to explore further, run
 a bounded session (coverage-guided fuzzing needs the LLVM backend):
 

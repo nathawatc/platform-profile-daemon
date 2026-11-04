@@ -8,6 +8,27 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.17.0
+
+      # ruff and rumdl are pinned to the versions the checks were written
+      # against; bump them together with any new findings.
+      - name: Install linters
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck shfmt
+          pipx install ruff==0.17.3
+          pipx install rumdl==0.2.78
+
+      - name: Lint (zig fmt, shellcheck, shfmt, ruff, rumdl)
+        run: bash tools/lint.sh
+
   test:
     runs-on: ubuntu-latest
     steps:

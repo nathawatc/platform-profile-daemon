@@ -38,8 +38,9 @@ Everything else:
 - `build.zig`, `build.zig.zon`: build graph and package metadata.
 - `data/`: systemd units, D-Bus activation/policy and Polkit policy files.
 - `tools/`: install, size and smoke-test scripts (see Testing).
-- `.github/workflows/ci.yml`: CI running the same checks. Actions are pinned
-  to commit SHAs (`# vN` comment); Dependabot proposes updates.
+- `.github/workflows/ci.yml`: CI running the same checks (a `lint` job and a
+  `test` job). Actions are pinned to commit SHAs (`# vN` comment);
+  Dependabot proposes updates.
 - `.agents/skills/zig-0-17/`: vendored Zig 0.17 guidance, pinned by
   `skills-lock.json`. Do not edit it.
 
@@ -367,7 +368,15 @@ bash tools/check-install.sh zig-out
 bash tools/check-size.sh zig-out
 bash tools/check-units.sh
 bash tools/init-smoke.sh
+python3 tools/capture-corpus.py --verify
+bash tools/lint.sh
 ```
+
+`tools/lint.sh` is the single lint entrypoint, also run by the CI `lint` job:
+`zig fmt --check`, `shellcheck`, `shfmt -i 0 -sr -ci -bn`, `ruff check` and
+`ruff format --check` (Python tools), and `rumdl check .`. Install `shellcheck`,
+`shfmt`, `ruff` and `rumdl` locally; CI pins `ruff` and `rumdl` versions in
+`ci.yml`, so bump them there together with any new findings.
 
 `tools/check-size.sh` enforces the binary size budgets and
 `tools/check-units.sh` the unit exposure scores. The init smoke test
@@ -454,8 +463,8 @@ behavior changed and how it was validated. Include command output summaries
 for build, tests and smoke checks. Note explicitly if a change affects the
 strict sysfs-only contract.
 
-Markdown files must pass `rumdl check .`; the config in `.rumdl.toml` excludes
-the vendored skills.
+Markdown files must pass `rumdl check .` (part of `tools/lint.sh`); the config
+in `.rumdl.toml` excludes the vendored skills.
 
 ## Security and scope
 
