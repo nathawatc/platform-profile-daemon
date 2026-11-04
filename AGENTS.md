@@ -466,6 +466,23 @@ strict sysfs-only contract.
 Markdown files must pass `rumdl check .` (part of `tools/lint.sh`); the config
 in `.rumdl.toml` excludes the vendored skills.
 
+## Release
+
+Releases are tagged `vX.Y.Z`; `build.zig.zon` `.version` must equal the tag.
+Before tagging:
+
+1. CI is green on `main` (`lint` and `test` jobs).
+2. Run the full list under Testing on the final commit.
+3. Run the target-machine checklist under Testing on a real systemd
+   machine; sandbox directives, the real-sysfs external-change check and the
+   watchdog cannot be verified anywhere else.
+4. Update user-facing behavior in `README.md` and summarize the behavior
+   changes since the last tag in the release notes: reply order, exit policy,
+   Polkit handling, unit hardening, anything that changes what users see.
+
+The packaged build is `ReleaseSmall`; validate against it, not only
+`ReleaseFast`.
+
 ## Security and scope
 
 The daemon must not manage:

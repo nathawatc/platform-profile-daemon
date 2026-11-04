@@ -2,22 +2,15 @@
 
 Thanks for helping improve `platform-profile-daemon`.
 
-This project is intentionally small: it implements a Power Profiles
-Daemon-compatible D-Bus service backed only by:
-
-```text
-/sys/firmware/acpi/platform_profile
-```
-
-Before changing behavior, read:
-
-- `README.md` for user-facing behavior and manual validation
-- `AGENTS.md` for developer rules, D-Bus compatibility, security scope, and
-  review requirements
+The project is intentionally small: a Power Profiles Daemon-compatible D-Bus
+service backed only by `/sys/firmware/acpi/platform_profile`. Read
+[README.md](README.md) for what it does and [AGENTS.md](AGENTS.md) for the
+developer rules: architecture, D-Bus compatibility, security scope and testing
+details.
 
 ## Scope
 
-Accepted changes should preserve the fixed mapping:
+Accepted changes keep the fixed mapping:
 
 ```text
 power-saver -> low-power
@@ -25,108 +18,86 @@ balanced    -> balanced
 performance -> performance
 ```
 
-The separate init helper opts canonical CPUFreq policies into Dynamic EPP once
-and reapplies the saved platform profile. Keep that code and its CPUFreq write
-permissions out of the long-running daemon. Do not add CPU governor, static EPP,
-TLP, vendor tuning, `platform_profile_choices` discovery, or policy-engine behavior.
+The separate init helper enables Dynamic EPP once and reapplies the saved
+profile; its CPUFreq permissions stay out of the daemon. Do not add CPU
+governors, static EPP, TLP, vendor tuning, `platform_profile_choices`
+discovery or policy-engine behavior.
 
-## Development
+Preserve desktop compatibility:
 
-Use fake sysfs for local development:
+- `ActiveProfile` stays writable by normal desktop clients
+- invalid input is rejected before authorization or sysfs writes
+- failed or denied writes never emit profile-change signals
+- runtime sysfs failures never turn into a fake `balanced`
+
+## Setup
+
+You need Zig 0.17.0. Use a fake sysfs file for development:
 
 ```sh
 printf 'balanced\n' > /tmp/platform_profile
-zig build -Doptimize=ReleaseFast
-sudo ./zig-out/lib/platform-profile-daemon --platform-profile /tmp/platform_profile
+zig build
+sudo ./zig-out/lib/platform-profile-daemon \
+    --platform-profile /tmp/platform_profile
 ```
 
-Do not write the real `/sys/firmware/acpi/platform_profile` unless intentionally
+Do not write the real `/sys/firmware/acpi/platform_profile` unless you are
 validating on a target machine.
 
-## Required checks
+## Checks
 
-Run before submitting changes:
+Run before submitting:
 
 ```sh
-zig build test                      # includes the zig fmt check
-zig build -Doptimize=ReleaseFast
+zig build test                      # tests plus the zig fmt check
+zig build
 bash tools/check-install.sh zig-out
 bash tools/check-size.sh zig-out
 bash tools/check-units.sh
 bash tools/init-smoke.sh
-python3 tools/capture-corpus.py --verify
-bash tools/lint.sh                  # shellcheck, shfmt, ruff, rumdl, zig fmt
-```
-
-`tools/lint.sh` needs `shellcheck`, `shfmt`, `ruff` and `rumdl` installed.
-CI (`.github/workflows/ci.yml`) runs the same checks in a `lint` and a `test`
-job, the latter adding the isolated D-Bus smoke test.
-
-The wire parser, message framing, SASL handshake and Polkit reply decoding
-have fuzz tests. Plain `zig build test`
-replays deterministic mutation and chunking sweeps; to explore further, run
-a bounded session (coverage-guided fuzzing needs the LLVM backend):
-
-```sh
-zig build test --fuzz=500K -Dllvm=true
-```
-
-The init smoke test uses unprivileged user/mount namespaces and a temporary
-sysfs tree. An optional isolated D-Bus check also runs the existing smoke suite
-with fake sysfs and a test Polkit responder (requires `python-gobject`):
-
-```sh
 unshare --user --map-root-user python3 tools/dbus-isolated-smoke.py
+python3 tools/capture-corpus.py --verify
+bash tools/lint.sh
 ```
 
-These checks do not replace target systemd sandbox and real Polkit validation.
+`tools/lint.sh` needs `shellcheck`, `shfmt`, `ruff` and `rumdl`. The isolated
+D-Bus smoke test needs `python-gobject`, `dbus-daemon` and `unshare`. CI runs
+the same checks in a `lint` job and a `test` job.
 
-For D-Bus, service, or authorization changes, also run on a target machine:
+These checks do not replace validation on a real systemd machine. For D-Bus,
+service, unit or authorization changes, also run on a target:
 
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl restart platform-profile-daemon-init platform-profile-daemon
 systemctl status platform-profile-daemon   # active, started via READY=1
 journalctl -u platform-profile-daemon -b   # no seccomp (SIGSYS) kills
-sudo ./tools/dbus-smoke.sh   # also checks a change made directly in sysfs
+sudo ./tools/dbus-smoke.sh
 systemd-analyze security platform-profile-daemon.service
 ```
 
-Then verify desktop widget or power-menu switching still works. To check the
-watchdog, `sudo kill -STOP` the daemon: systemd restarts it after about 30 s.
+Then switch profiles from the desktop widget. To check the watchdog,
+`sudo kill -STOP` the daemon: systemd restarts it after about 30 s.
 
-## Compatibility rules
+Fuzzing and corpus regeneration are described in the Testing section of
+AGENTS.md.
 
-Preserve desktop/client compatibility:
+## Commits and pull requests
 
-- `ActiveProfile` must remain writable by normal desktop clients
-- invalid input must be rejected before authorization or sysfs writes
-- failed or denied writes must not emit fake profile-change signals
-- compatibility properties and methods must not be removed without a specific
-  compatibility audit
-
-Runtime sysfs failures must stay strict:
-
-- invalid, empty, or malformed refreshes must not become fake `balanced`
-- cached state may update only after a valid read or successful write
-
-## Pull requests
-
-Use the existing commit style:
+Use conventional commits:
 
 ```text
 feat(dbus): ...
 fix(daemon): ...
 perf(dbus): ...
 refactor(profile): ...
+test: ...
 ```
 
-Pull requests should include:
+A pull request should say why the change is needed, what sysfs or D-Bus
+behavior changed, how you validated it (with command output summaries), and
+whether the strict sysfs-only contract changed. If it touches packaging,
+service files, D-Bus policy or Polkit policy, include installed-system
+validation results.
 
-- why the change is needed
-- what sysfs or D-Bus behavior changed
-- validation commands and result summaries
-- whether the strict sysfs-only contract changed
-
-If a change touches packaging, service files, D-Bus policy, or Polkit policy,
-include the relevant installed-system validation results.
+Markdown must pass `rumdl check .` (80 columns).
