@@ -5,6 +5,7 @@
 //! in `dbus/transport.zig`, marshalling in `dbus/wire.zig`, and the Polkit
 //! exchange in `dbus/polkit.zig`.
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const Daemon = @import("daemon.zig").Daemon;
 const profile_mod = @import("profile.zig");
@@ -43,6 +44,9 @@ const POLLPRI: i16 = linux.POLL.PRI;
 const POLLERR: i16 = linux.POLL.ERR;
 const POLLHUP: i16 = linux.POLL.HUP;
 const POLLNVAL: i16 = linux.POLL.NVAL;
+/// Events requested on the watch fd, and the revents that mean "go look".
+const watch_events: i16 = POLLPRI | POLLERR;
+const watch_ready: i16 = watch_events | POLLHUP | POLLNVAL;
 
 const introspection_xml = @embedFile("dbus/introspection.xml");
 
@@ -59,7 +63,7 @@ const Prop = enum {
 };
 
 /// Explicit because message dispatch and Polkit waiting call each other.
-const ServeError = error{ NoSpace, SendFailed, RecvFailed, Closed, PollFailed, Protocol, Timeout };
+const ServeError = error{ NoSpace, SendFailed, RecvFailed, Closed, PollFailed, Protocol, Timeout, WatchLost };
 
 fn nowMs() i64 {
     var ts: linux.timespec = undefined;
@@ -98,16 +102,32 @@ const Bus = struct {
             if (try self.pump(serial)) |reply| return reply;
             const left = deadline - nowMs();
             if (left <= 0) return error.Timeout;
-            var pfd = [1]linux.pollfd{.{ .fd = self.t.fd, .events = POLLIN, .revents = 0 }};
-            const rc = linux.poll(&pfd, 1, @intCast(left));
+            // Keep serving profile changes made elsewhere (e.g. a firmware
+            // hotkey) while a user sits at an authentication prompt.
+            var fds = [2]linux.pollfd{
+                .{ .fd = self.t.fd, .events = POLLIN, .revents = 0 },
+                .{ .fd = self.daemon.sysfs.fd, .events = watch_events, .revents = 0 },
+            };
+            const rc = linux.poll(&fds, 2, @intCast(left));
             switch (linux.errno(rc)) {
                 .SUCCESS => {},
                 .INTR => continue,
                 else => return error.PollFailed,
             }
             if (rc == 0) return error.Timeout;
-            try self.t.recv();
+            if (fds[0].revents != 0) try self.t.recv();
+            if (fds[1].revents & watch_ready != 0) try self.serviceWatch();
         }
+    }
+
+    /// Handles a platform_profile change event and announces a visible change.
+    /// An unrecoverable watch failure ends the service (systemd restarts it).
+    fn serviceWatch(self: *Bus) ServeError!void {
+        const changed = self.daemon.checkExternalUpdate() catch |err| {
+            if (!builtin.is_test) std.log.err("platform_profile watch lost: {t}", .{err});
+            return error.WatchLost;
+        };
+        if (changed) try self.emitActiveProfileChanged();
     }
 
     /// Sends the call in `w` and waits for the reply to `serial`.
@@ -270,7 +290,8 @@ const Bus = struct {
         var r: wire.Reader = .{ .buf = m.body };
         const iface_arg = r.getStr() catch return self.replyError(m, err_invalid_args, "malformed arguments");
         const name = r.getStr() catch return self.replyError(m, err_invalid_args, "malformed arguments");
-        if (!eql(iface_arg, interface)) return self.replyError(m, err_unknown_interface, "unknown interface");
+        // Like GetAll, an empty interface means "any": there is only one.
+        if (iface_arg.len != 0 and !eql(iface_arg, interface)) return self.replyError(m, err_unknown_interface, "unknown interface");
         const prop = std.meta.stringToEnum(Prop, name) orelse return self.replyError(m, err_unknown_property, "unknown property");
 
         var w = self.writer();
@@ -337,17 +358,20 @@ const Bus = struct {
         }
 
         // The cache can move even when the request then fails (the kernel was
-        // read first), so announce any visible change on both paths.
+        // read first), so announce any visible change on both paths. The
+        // caller's answer goes first so a failed signal cannot swallow it.
         const before = self.daemon.active;
         const result = self.daemon.setActiveProfile(requested);
-        if (self.daemon.active != before) try self.emitActiveProfileChanged();
-        result catch |err| return switch (err) {
+        const changed = self.daemon.active != before;
+        if (result) |_| {
+            try self.replyEmpty(req);
+        } else |err| try switch (err) {
             error.UnsupportedPlatform => self.replyError(req, err_not_supported, "platform_profile sysfs is unavailable"),
             error.PermissionDenied => self.replyError(req, err_access_denied, "permission denied writing platform_profile"),
             error.ReadFailed => self.replyError(req, err_failed, "failed to read platform_profile"),
             error.WriteFailed => self.replyError(req, err_failed, "failed to write platform_profile"),
         };
-        try self.replyEmpty(req);
+        if (changed) try self.emitActiveProfileChanged();
     }
 
     /// Asks Polkit about `sender`. Returns null when authorized, otherwise the
@@ -383,7 +407,7 @@ pub fn run(daemon: *Daemon, bus_address: ?[]const u8) !void {
 
         var fds = [2]linux.pollfd{
             .{ .fd = fd, .events = POLLIN, .revents = 0 },
-            .{ .fd = daemon.sysfs.fd, .events = POLLPRI | POLLERR, .revents = 0 },
+            .{ .fd = daemon.sysfs.fd, .events = watch_events, .revents = 0 },
         };
         switch (linux.errno(linux.poll(&fds, 2, -1))) {
             .SUCCESS => {},
@@ -392,9 +416,7 @@ pub fn run(daemon: *Daemon, bus_address: ?[]const u8) !void {
         }
 
         if (fds[0].revents != 0) try bus.t.recv();
-        if (fds[1].revents & (POLLPRI | POLLERR | POLLHUP | POLLNVAL) != 0) {
-            if (try daemon.checkExternalUpdate()) try bus.emitActiveProfileChanged();
-        }
+        if (fds[1].revents & watch_ready != 0) try bus.serviceWatch();
     }
 }
 
@@ -604,6 +626,7 @@ test "Set rejects invalid input before Polkit and without writing" {
 
     const Case = struct { iface: []const u8, prop: []const u8, vsig: []const u8, value: []const u8, err: []const u8 };
     const cases = [_]Case{
+        .{ .iface = "", .prop = "ActiveProfile", .vsig = "s", .value = "performance", .err = err_unknown_interface },
         .{ .iface = interface, .prop = "ActiveProfile", .vsig = "s", .value = "turbo", .err = err_invalid_args },
         .{ .iface = interface, .prop = "ActiveProfile", .vsig = "s", .value = "low-power", .err = err_invalid_args },
         .{ .iface = interface, .prop = "ActiveProfile", .vsig = "b", .value = "", .err = err_invalid_args },
@@ -628,7 +651,7 @@ test "Set rejects invalid input before Polkit and without writing" {
     try std.testing.expectEqual(profile_mod.Profile.balanced, daemon.active);
 }
 
-test "authorized Set writes sysfs, signals the change, then replies" {
+test "authorized Set writes sysfs, replies, then signals the change" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path: [max_path]u8 = undefined;
@@ -651,12 +674,12 @@ test "authorized Set writes sysfs, signals the change, then replies" {
     var frames: Frames = .{ .rest = pair.drain(&out) };
     const request = frames.next().?;
     try std.testing.expectEqualStrings("CheckAuthorization", request.member);
-    const signal = frames.next().?;
-    try std.testing.expectEqual(wire.msg_signal, signal.kind);
-    try std.testing.expectEqualStrings("PropertiesChanged", signal.member);
     const reply = frames.next().?;
     try std.testing.expectEqual(wire.msg_method_return, reply.kind);
     try std.testing.expectEqual(@as(u32, 7), reply.reply_serial);
+    const signal = frames.next().?;
+    try std.testing.expectEqual(wire.msg_signal, signal.kind);
+    try std.testing.expectEqualStrings("PropertiesChanged", signal.member);
     try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
 
     try expectProfileFile(&tmp, "performance\n");
@@ -715,8 +738,9 @@ test "Set that finds the kernel already at the request still signals a stale cac
     var out: [2048]u8 = undefined;
     var frames: Frames = .{ .rest = pair.drain(&out) };
     _ = frames.next().?; // CheckAuthorization
-    try std.testing.expectEqualStrings("PropertiesChanged", frames.next().?.member);
     try std.testing.expectEqual(wire.msg_method_return, frames.next().?.kind);
+    try std.testing.expectEqualStrings("PropertiesChanged", frames.next().?.member);
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
     try expectProfileFile(&tmp, "performance");
 }
 
@@ -804,4 +828,71 @@ test "Ping, unknown methods and unknown objects get replies" {
             try std.testing.expectEqual(wire.msg_method_return, reply.kind);
         }
     }
+}
+
+test "Get accepts an empty interface like GetAll" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "performance\n");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+
+    var buf: [512]u8 = undefined;
+    var w = try buildProps(&buf, "Get", "ss");
+    try w.putStr("");
+    try w.putStr("ActiveProfile");
+    var out: [512]u8 = undefined;
+    const reply = try pair.roundTrip(&w, &out);
+    try std.testing.expectEqual(wire.msg_method_return, reply.kind);
+
+    w = try buildProps(&buf, "Get", "ss");
+    try w.putStr("org.freedesktop.UPower.Other");
+    try w.putStr("ActiveProfile");
+    const bad = try pair.roundTrip(&w, &out);
+    try std.testing.expectEqualStrings(err_unknown_interface, bad.err_name);
+}
+
+test "serviceWatch announces an external change exactly once" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [max_path]u8 = undefined;
+    var daemon = try testDaemon(&tmp, &path, "balanced\n");
+    defer daemon.deinit();
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+    var out: [1024]u8 = undefined;
+
+    try bus.serviceWatch();
+    try std.testing.expectEqual(@as(usize, 0), pair.drain(&out).len);
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = "low-power\n" });
+    try bus.serviceWatch();
+    var frames: Frames = .{ .rest = pair.drain(&out) };
+    const signal = frames.next().?;
+    try std.testing.expectEqualStrings("PropertiesChanged", signal.member);
+    try std.testing.expectEqual(@as(?wire.Message, null), frames.next());
+    try std.testing.expectEqual(profile_mod.Profile.power_saver, daemon.active);
+
+    try bus.serviceWatch();
+    try std.testing.expectEqual(@as(usize, 0), pair.drain(&out).len);
+}
+
+test "serviceWatch reports a lost watch after repeated read failures" {
+    var fds: [2]linux.fd_t = undefined;
+    try std.testing.expect(linux.errno(linux.pipe2(&fds, .{ .CLOEXEC = true })) == .SUCCESS);
+    defer _ = linux.close(fds[0]);
+    defer _ = linux.close(fds[1]);
+    // pread on a pipe fails with ESPIPE.
+    var daemon: Daemon = .{ .sysfs = .{ .path = "/unused", .fd = fds[0] }, .active = .balanced };
+    var bus: Bus = undefined;
+    const pair = try TestPair.init(&bus, &daemon);
+    defer pair.deinit();
+
+    try bus.serviceWatch();
+    try bus.serviceWatch();
+    try std.testing.expectError(error.WatchLost, bus.serviceWatch());
 }

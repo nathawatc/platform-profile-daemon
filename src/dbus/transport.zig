@@ -140,12 +140,15 @@ pub const Transport = struct {
         try w.putRaw("\r\n");
         try self.send(w.bytes());
 
-        while (std.mem.find(u8, self.rbuf[0..self.rlen], "\r\n") == null) {
+        const line_len = while (true) {
+            if (std.mem.find(u8, self.rbuf[0..self.rlen], "\r\n")) |end| break end + 2;
             if (self.rlen == self.rbuf.len) return error.AuthFailed;
             try self.recv();
-        }
-        if (!std.mem.startsWith(u8, self.rbuf[0..self.rlen], "OK ")) return error.AuthFailed;
-        self.rlen = 0;
+        };
+        const accepted = std.mem.startsWith(u8, self.rbuf[0..line_len], "OK ");
+        // Only the reply line is ours; anything after it is already message data.
+        self.consume(line_len);
+        if (!accepted) return error.AuthFailed;
         try self.send("BEGIN\r\n");
     }
 };
@@ -251,4 +254,38 @@ test "serials wrap past zero" {
     var t: Transport = .{ .fd = -1, .next_serial = std.math.maxInt(u32) };
     try std.testing.expectEqual(@as(u32, std.math.maxInt(u32)), t.takeSerial());
     try std.testing.expectEqual(@as(u32, 1), t.takeSerial());
+}
+
+test "authenticate sends EXTERNAL with the hex uid and keeps bytes after OK" {
+    const sv = try socketPair();
+    defer _ = linux.close(sv[0]);
+    defer _ = linux.close(sv[1]);
+    var t: Transport = .{ .fd = sv[0] };
+
+    const reply = "OK 0123456789abcdef\r\nxyz";
+    try std.testing.expectEqual(reply.len, linux.sendto(sv[1], reply, reply.len, 0, null, 0));
+    try t.authenticate();
+    try std.testing.expectEqualStrings("xyz", t.rbuf[0..t.rlen]);
+
+    var uid_text: [16]u8 = undefined;
+    const uid = try std.mem.print(&uid_text, "{d}", .{linux.geteuid()});
+    var expected: [64]u8 = undefined;
+    var w: wire.Writer = .{ .buf = &expected };
+    try w.putRaw("\x00AUTH EXTERNAL ");
+    for (uid) |c| try w.putRaw(&.{ "0123456789abcdef"[c >> 4], "0123456789abcdef"[c & 0xf] });
+    try w.putRaw("\r\nBEGIN\r\n");
+    var got: [64]u8 = undefined;
+    const n = linux.recvfrom(sv[1], &got, got.len, 0, null, null);
+    try std.testing.expectEqualStrings(w.bytes(), got[0..n]);
+}
+
+test "authenticate rejects anything but OK" {
+    for ([_][]const u8{ "REJECTED EXTERNAL\r\n", "DATA\r\n", "ERROR\r\n" }) |reply| {
+        const sv = try socketPair();
+        defer _ = linux.close(sv[0]);
+        defer _ = linux.close(sv[1]);
+        var t: Transport = .{ .fd = sv[0] };
+        try std.testing.expectEqual(reply.len, linux.sendto(sv[1], reply.ptr, reply.len, 0, null, 0));
+        try std.testing.expectError(error.AuthFailed, t.authenticate());
+    }
 }

@@ -143,10 +143,13 @@ Preserve strict runtime state semantics:
 - invalid, empty, or malformed refresh must keep cached state unchanged
 - `platform_profile` is parsed in one place (`Profile.parseKernel`): an exact
   name with at most one trailing newline, no other whitespace
-- a read error on the watched fd means the watch is lost: the daemon exits so
+- a failed read of the watched fd is logged and retried on the next wake; the
+  third consecutive failure means the watch is lost and the daemon exits so
   systemd restarts it, instead of continuing without change events
+- the watch fd is also serviced while a Polkit reply is awaited
 - handlers announce `PropertiesChanged` whenever the cached profile differs
-  before and after an operation, including when it then fails
+  before and after an operation, including when it then fails; the method
+  reply is sent first so a failed signal cannot swallow it
 - cache may update only after a valid external read or successful sysfs write
 - read/write helpers must handle `EINTR`, short reads/writes, and fd cleanup
 - expected warning noise may be suppressed in tests only, not runtime
@@ -154,7 +157,9 @@ Preserve strict runtime state semantics:
 Runtime `custom` must log a warning and preserve cached `ActiveProfile` without
 writing. An explicit D-Bus `ActiveProfile` request must still write the requested
 canonical profile when the kernel state is inconsistent, even if it matches the
-cached value, allowing kernel handlers to converge.
+cached value, allowing kernel handlers to converge. This also holds when the
+pre-write read of `platform_profile` fails: the failure is logged and only the
+write decides the outcome.
 
 ### D-Bus compatibility
 

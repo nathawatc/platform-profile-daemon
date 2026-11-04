@@ -9,9 +9,14 @@ const profile = @import("profile.zig");
 const sysfs_mod = @import("sysfs.zig");
 const testutil = @import("testutil.zig");
 
+/// Consecutive failed watch reads tolerated before the daemon gives up.
+const max_read_failures = 3;
+
 pub const Daemon = struct {
     sysfs: sysfs_mod.Sysfs,
     active: profile.Profile,
+    /// Consecutive failed reads of the watch fd; reset by any successful read.
+    read_failures: u8 = 0,
 
     /// Opens `platform_profile` and primes the cache. Startup `custom`,
     /// unknown or unreadable content is an error: nothing is chosen for it.
@@ -27,7 +32,8 @@ pub const Daemon = struct {
 
     /// Applies an explicit request. The kernel is read fresh and written
     /// unless it already holds `requested`, so a request still reaches the
-    /// kernel when its state is custom or inconsistent with the cache.
+    /// kernel when its state is custom, unreadable or inconsistent with the
+    /// cache; only the write decides the outcome.
     /// Callers detect a visible change by comparing `active` before and after,
     /// including when this fails after refreshing the cache.
     pub fn setActiveProfile(self: *Daemon, requested: profile.Profile) sysfs_mod.IoError!void {
@@ -36,27 +42,37 @@ pub const Daemon = struct {
             if (current == requested) return;
         } else |err| switch (err) {
             error.Custom, error.Unknown => {},
-            else => |io| return io,
+            else => |io| if (!builtin.is_test) std.log.warn("could not read platform_profile before writing: {t}", .{io}),
         }
         try self.sysfs.write(requested);
         self.active = requested;
     }
 
     /// Handles a `platform_profile` change event. Returns whether the cached
-    /// profile changed. Unusable content keeps the cache; a read failure means
-    /// the watch is lost and is returned so the daemon exits and restarts.
+    /// profile changed. Unusable content keeps the cache. A failed read is
+    /// retried on the next wake (the kernel keeps the event pending); the
+    /// `max_read_failures`th consecutive failure means the watch is lost and
+    /// is returned so the daemon exits and systemd restarts it.
     pub fn checkExternalUpdate(self: *Daemon) sysfs_mod.IoError!bool {
         const current = self.sysfs.read() catch |err| switch (err) {
             error.Custom => return self.ignore("ignoring custom platform_profile; keeping cached ActiveProfile"),
             error.Unknown => return self.ignore("ignoring invalid platform_profile refresh event"),
-            else => |io| return io,
+            else => |io| {
+                self.read_failures += 1;
+                if (self.read_failures >= max_read_failures) return io;
+                if (!builtin.is_test) std.log.warn("platform_profile read failed ({t}); will retry", .{io});
+                return false;
+            },
         };
+        self.read_failures = 0;
         if (current == self.active) return false;
         self.active = current;
         return true;
     }
 
-    fn ignore(_: *Daemon, comptime message: []const u8) bool {
+    /// The read succeeded but the content is unusable.
+    fn ignore(self: *Daemon, comptime message: []const u8) bool {
+        self.read_failures = 0;
         if (!builtin.is_test) std.log.warn(message, .{});
         return false;
     }
@@ -194,14 +210,82 @@ test "custom, malformed and empty external content keep the cache" {
     }
 }
 
-test "a read failure on the watch fd is returned, not swallowed" {
-    var fds: [2]std.os.linux.fd_t = undefined;
-    try std.testing.expect(std.os.linux.errno(std.os.linux.pipe2(&fds, .{ .CLOEXEC = true })) == .SUCCESS);
-    defer @import("sys.zig").close(fds[1]);
-
+fn pipeDaemon(fds: *[2]std.os.linux.fd_t) !Daemon {
+    try std.testing.expect(std.os.linux.errno(std.os.linux.pipe2(fds, .{ .CLOEXEC = true })) == .SUCCESS);
     // pread on a pipe fails with ESPIPE.
-    var daemon: Daemon = .{ .sysfs = .{ .path = "/unused", .fd = fds[0] }, .active = .balanced };
+    return .{ .sysfs = .{ .path = "/unused", .fd = fds[0] }, .active = .balanced };
+}
+
+test "the third consecutive watch read failure is returned" {
+    const sys = @import("sys.zig");
+    var fds: [2]std.os.linux.fd_t = undefined;
+    var daemon = try pipeDaemon(&fds);
     defer daemon.deinit();
+    defer sys.close(fds[1]);
+
+    try std.testing.expectEqual(false, try daemon.checkExternalUpdate());
+    try std.testing.expectEqual(false, try daemon.checkExternalUpdate());
     try std.testing.expectError(error.ReadFailed, daemon.checkExternalUpdate());
     try std.testing.expectEqual(profile.Profile.balanced, daemon.active);
+}
+
+test "a successful read resets the failure count" {
+    const sys = @import("sys.zig");
+    var fds: [2]std.os.linux.fd_t = undefined;
+    var daemon = try pipeDaemon(&fds);
+    defer sys.close(fds[1]);
+    const broken = daemon.sysfs;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [max_path]u8 = undefined;
+    const good = try Daemon.init(try tempFile(&tmp, &buf, "balanced\n"));
+    defer good.deinit();
+
+    for (0..4) |_| {
+        daemon.sysfs = broken;
+        try std.testing.expectEqual(false, try daemon.checkExternalUpdate());
+        try std.testing.expectEqual(false, try daemon.checkExternalUpdate());
+        daemon.sysfs = good.sysfs;
+        try std.testing.expectEqual(false, try daemon.checkExternalUpdate());
+        try std.testing.expectEqual(@as(u8, 0), daemon.read_failures);
+    }
+    sys.close(fds[0]);
+}
+
+test "unusable content also resets the failure count" {
+    const sys = @import("sys.zig");
+    var fds: [2]std.os.linux.fd_t = undefined;
+    var daemon = try pipeDaemon(&fds);
+    defer sys.close(fds[1]);
+    defer sys.close(fds[0]);
+    _ = try daemon.checkExternalUpdate();
+    try std.testing.expectEqual(@as(u8, 1), daemon.read_failures);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [max_path]u8 = undefined;
+    const odd = try Daemon.init(try tempFile(&tmp, &buf, "balanced\n"));
+    defer odd.deinit();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p", .data = "custom\n" });
+    daemon.sysfs = odd.sysfs;
+    _ = try daemon.checkExternalUpdate();
+    try std.testing.expectEqual(@as(u8, 0), daemon.read_failures);
+}
+
+test "an explicit request still writes when the pre-read fails" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [max_path]u8 = undefined;
+    var daemon = try Daemon.init(try tempFile(&tmp, &buf, "balanced\n"));
+    defer daemon.deinit();
+    // Write-only: the fresh read fails with EACCES (unless running as root,
+    // where it succeeds); either way the request must end up in the file.
+    const rc = std.os.linux.fchmodat(std.os.linux.AT.FDCWD, daemon.sysfs.path.ptr, 0o200);
+    try std.testing.expect(std.os.linux.errno(rc) == .SUCCESS);
+
+    try daemon.setActiveProfile(.performance);
+    try std.testing.expectEqual(profile.Profile.performance, daemon.active);
+    _ = std.os.linux.fchmodat(std.os.linux.AT.FDCWD, daemon.sysfs.path.ptr, 0o600);
+    try expectFile(&tmp, "performance\n");
 }
