@@ -38,7 +38,8 @@ Everything else:
 - `build.zig`, `build.zig.zon`: build graph and package metadata.
 - `data/`: systemd units, D-Bus activation/policy and Polkit policy files.
 - `tools/`: install, size and smoke-test scripts (see Testing).
-- `.github/workflows/ci.yml`: CI running the same checks.
+- `.github/workflows/ci.yml`: CI running the same checks. Actions are pinned
+  to commit SHAs (`# vN` comment); Dependabot proposes updates.
 - `.agents/skills/zig-0-17/`: vendored Zig 0.17 guidance, pinned by
   `skills-lock.json`. Do not edit it.
 
